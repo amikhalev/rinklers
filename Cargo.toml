@@ -6,3 +6,4 @@ authors = ["Alex Mikhalev <alexmikhalevalex@gmail.com>"]
 [dependencies]
 log = "0.3"
 env_logger = "0.3"
+signal = "0.3.2"
