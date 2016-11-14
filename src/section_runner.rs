@@ -1,3 +1,5 @@
+//! Contains [SectionRunner](struct.SectionRunner.html)
+
 use std::time::{Duration, Instant};
 use std::sync::mpsc::{Sender, Receiver, channel, RecvTimeoutError};
 use std::sync::Arc;

@@ -1,4 +1,4 @@
-//! Implementation of irrigation zones (or sections)
+//! Implementation of irrigation zones (or [Section](trait.Section.html)s)
 //! 
 //! All section types implement the [Section](trait.Section.html) trait. They generally map to some
 //! real-world control of section state (ie. a GPIO pin).

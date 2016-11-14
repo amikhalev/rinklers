@@ -9,6 +9,7 @@ extern crate signal;
 
 pub mod section;
 pub mod section_runner;
+pub mod program;
 
 use std::time::Duration;
 use std::env;
@@ -17,6 +18,7 @@ use signal::trap::Trap;
 use log::LogLevelFilter;
 use section::{Section, LogSection};
 use section_runner::SectionRunner;
+use program::Program;
 
 fn init_log() {
     let mut log_builder = env_logger::LogBuilder::new();
@@ -25,32 +27,6 @@ fn init_log() {
         log_builder.parse(&s);
     }
     log_builder.init().unwrap();
-}
-
-use std::iter::FromIterator;
-
-type ProgItem = (Arc<Section>, Duration);
-
-pub struct Program {
-    name: String,
-    sequence: Vec<ProgItem>,
-}
-
-impl Program {
-    pub fn new<S: Into<String>, I: IntoIterator<Item=ProgItem>>(name: S, sequence: I) -> Program {
-        Program { name: name.into(), sequence: Vec::from_iter(sequence) }
-    }
-
-    pub fn name(&self) -> &String {
-        &self.name
-    }
-
-    pub fn run(&self, runner: &SectionRunner) {
-        debug!("running program {}", self.name);
-        for item in self.sequence.iter() {
-            runner.run_section(item.0.clone(), item.1);
-        }
-    }
 }
 
 fn main() {
