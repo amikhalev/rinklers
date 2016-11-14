@@ -6,4 +6,6 @@ authors = ["Alex Mikhalev <alexmikhalevalex@gmail.com>"]
 [dependencies]
 log = "0.3"
 env_logger = "0.3"
-signal = "0.3.2"
+signal = "0.3"
+# chrono = "0.2"
+chrono = { git = "https://github.com/amikhalev/rust-chrono.git", branch = "weekday-derive-hash" }

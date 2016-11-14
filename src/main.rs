@@ -6,10 +6,12 @@
 extern crate log;
 extern crate env_logger;
 extern crate signal;
+extern crate chrono;
 
 pub mod section;
 pub mod section_runner;
 pub mod program;
+pub mod schedule;
 
 use std::time::Duration;
 use std::env;
