@@ -1,5 +1,5 @@
 //! Implementation of irrigation zones (or [Section](trait.Section.html)s)
-//!
+//! 
 //! All section types implement the [Section](trait.Section.html) trait. They generally map to some
 //! real-world control of section state (ie. a GPIO pin).
 
@@ -22,10 +22,7 @@ pub trait Section: Send + Sync {
 
 impl fmt::Debug for Section {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f,
-               "Section {{ name: \"{}\", state: {} }}",
-               self.name(),
-               self.state())
+        write!(f, "Section {{ name: \"{}\", state: {} }}", self.name(), self.state())
     }
 }
 
@@ -39,10 +36,7 @@ pub struct LogSection {
 impl LogSection {
     /// Creates a new `LogSection` with the specified `name`
     pub fn new<S: Into<String>>(name: S) -> LogSection {
-        LogSection {
-            name: name.into(),
-            state: Mutex::new(Cell::new(false)),
-        }
+        LogSection { name: name.into(), state: Mutex::new(Cell::new(false)) }
     }
 }
 
@@ -60,3 +54,4 @@ impl Section for LogSection {
         self.state.lock().unwrap().get()
     }
 }
+

@@ -45,10 +45,9 @@ fn main() {
         section.set_state(false);
     }
 
-    let program = Program::new("Test Program",
-                               [(sections[0].clone(), Duration::from_secs(2))]
-                                   .iter()
-                                   .cloned());
+    let program = Program::new("Test Program", [
+                               (sections[0].clone(), Duration::from_secs(2)),
+    ].iter().cloned());
 
     program.run(&section_runner);
 
@@ -57,3 +56,4 @@ fn main() {
     info!("received interrupt. stopping...");
     section_runner.stop();
 }
+

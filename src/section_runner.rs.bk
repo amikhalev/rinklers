@@ -50,7 +50,7 @@ enum Op {
     QueueRun(SecRun),
 }
 
-/// A notification that can be returned from
+/// A notification that can be returned from 
 /// [run_section](struct.SectionRunner.html#method.run_section)
 pub enum RunNotification {
     /// The section has started running

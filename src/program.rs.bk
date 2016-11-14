@@ -12,11 +12,8 @@ pub struct Program {
 }
 
 impl Program {
-    pub fn new<S: Into<String>, I: IntoIterator<Item = ProgItem>>(name: S, sequence: I) -> Program {
-        Program {
-            name: name.into(),
-            sequence: Vec::from_iter(sequence),
-        }
+    pub fn new<S: Into<String>, I: IntoIterator<Item=ProgItem>>(name: S, sequence: I) -> Program {
+        Program { name: name.into(), sequence: Vec::from_iter(sequence) }
     }
 
     pub fn name(&self) -> &String {
@@ -30,3 +27,4 @@ impl Program {
         }
     }
 }
+
