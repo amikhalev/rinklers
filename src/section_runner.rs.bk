@@ -168,7 +168,7 @@ impl SectionRunner {
                                    duration_str(&run.start_time.elapsed()));
                             run.sec.set_state(false);
                             // if the receiver is closed, it's ok
-                            let _ = run.notify.send(RunNotification::Interrupted);
+                            let _ = run.notify.send(RunNotification::Interrupted); 
                             for run in queue {
                                 let _ = run.notification_sender.send(RunNotification::Interrupted);
                             }
@@ -186,8 +186,7 @@ impl SectionRunner {
                                run.sec,
                                duration_str(&elapsed));
                         run.sec.set_state(false);
-                        // if the receiver is closed, it's ok
-                        let _ = run.notify.send(RunNotification::Finish);
+                        let _ = run.notify.send(RunNotification::Finish); // if the receiver is closed, it's ok
                         sleep = Sleep::None;
                         None
                     } else {
@@ -201,8 +200,7 @@ impl SectionRunner {
                                run.sec,
                                duration_str(&run.dur));
                         run.sec.set_state(true);
-                        // if the receiver is closed, it's ok
-                        let _ = run.notification_sender.send(RunNotification::Start);
+                        let _ = run.notification_sender.send(RunNotification::Start); // if the receiver is closed, it's ok
                         sleep = Sleep::AtMost(run.dur);
                         Some(Run {
                             start_time: Instant::now(),
