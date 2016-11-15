@@ -120,6 +120,62 @@ impl Schedule {
     }
 }
 
+use std::sync::mpsc::{channel, Sender, Receiver};
+use std::thread;
+
+pub trait Executor {
+    type Data: Send;
+    fn execute(&self, data: &Self::Data);
+}
+
+pub struct FnExecutor {
+}
+
+impl Executor for FnExecutor {
+    type Data = Box<Fn() + Send>;
+    
+    fn execute(&self, data: &Self::Data) {
+        data();
+    }
+}
+
+enum Op<E>
+    where E: Executor {
+    Quit,
+    Schedule(Schedule, E::Data),
+    Cancel,
+}
+
+pub struct ScheduleRunner<E>
+    where E: Executor
+{
+    executor: E,
+    sender: Sender<Op<E>>,
+}
+
+impl<E> ScheduleRunner<E>
+    where E: Executor
+{
+    pub fn start_new(executor: E) -> ScheduleRunner<E> {
+        let (send, recv) = channel();
+        thread::spawn(move || {
+            Self::run(recv)
+        });
+        ScheduleRunner {
+            executor: executor,
+            sender: send,
+        }
+    }
+
+    pub fn schedule(&mut self, schedule: Schedule, data: E::Data) {
+        self.schedules.push((schedule, data));
+    }
+
+    fn run(receiver: Receiver<Op<E>>) {
+        let schedules: Vec<(Schedule, E::Data)> = Vec::new();
+    }
+}
+
 #[cfg(test)]
 mod test {
     #[test]
@@ -132,5 +188,9 @@ mod test {
                                      DateTimeBound::None);
         let date = schedule.next_run_after(&Local.ymd(2016, 11, 14).and_hms(10, 30, 0));
         assert_eq!(date, Some(Local.ymd(2016, 11, 16).and_hms(10, 30, 0)));
+        let date = schedule.next_run_after(&Local.ymd(2016, 11, 16).and_hms(10, 20, 0));
+        assert_eq!(date, Some(Local.ymd(2016, 11, 16).and_hms(10, 30, 0)));
+        let date = schedule.next_run_after(&Local.ymd(2016, 11, 16).and_hms(10, 40, 0));
+        assert_eq!(date, Some(Local.ymd(2016, 11, 23).and_hms(10, 30, 0)));
     }
 }
