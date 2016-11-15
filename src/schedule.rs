@@ -36,6 +36,7 @@ impl DateTimeBound {
     }
 }
 
+/// A schedule that determines when an event will occur.
 #[derive(Default)]
 pub struct Schedule {
     times: TimeSet,
@@ -44,6 +45,7 @@ pub struct Schedule {
     to: DateTimeBound,
 }
 
+/// Gets the next date matching the `weekday` after `date`
 fn next_weekday<Tz: TimeZone>(date: &Date<Tz>, weekday: &Weekday) -> Date<Tz> {
     let mut date = date.clone();
     while &date.weekday() != weekday {
@@ -53,6 +55,19 @@ fn next_weekday<Tz: TimeZone>(date: &Date<Tz>, weekday: &Weekday) -> Date<Tz> {
 }
 
 impl Schedule {
+    /// Creates a new Schedule.
+    ///
+    /// # Examples
+    /// ```
+    /// # extern crate rinklers;
+    /// # extern crate chrono;
+    /// # fn main() {
+    /// # }
+    /// ```
+    ///
+    /// `times` is the times of day the event will be run. `weekdays` is the set of days of week
+    /// the event will be run. `from` and `to` are restrictions on the end and beginning of event
+    /// runs, respectively.
     pub fn new<T, W>(times: T, weekdays: W, from: DateTimeBound, to: DateTimeBound) -> Schedule
         where T: IntoIterator<Item = NaiveTime>,
               W: IntoIterator<Item = Weekday>
@@ -68,12 +83,12 @@ impl Schedule {
     pub fn next_run_after(&self, reference: &DateTime<Local>) -> Option<DateTime<Local>> {
         let to = self.to.resolve_from(reference);
         let from = match (self.from.resolve_from(reference), to) {
-            (Some(from), Some(to)) if from < to => from.with_year(from.year() + 1) ,
+            (Some(from), Some(to)) if from < to => from.with_year(from.year() + 1),
             (from, _) => from,
         };
         let reference = match from {
             Some(from) if &from > reference => from,
-            _ => reference.clone()
+            _ => reference.clone(),
         };
         let mut candidate: Option<DateTime<Local>> = None;
         for weekday in self.weekdays.iter() {
@@ -87,7 +102,7 @@ impl Schedule {
                     });
                 let date = match (date, to) {
                     (Some(date), Some(to)) if date > to => None,
-                    (date, _) => date
+                    (date, _) => date,
                 };
                 candidate = match (candidate, date) {
                     // return whichever is first if there are 2 candidates
@@ -102,5 +117,20 @@ impl Schedule {
 
     pub fn next_run(&self) -> Option<DateTime<Local>> {
         self.next_run_after(&Local::now())
+    }
+}
+
+#[cfg(test)]
+mod test {
+    #[test]
+    fn test_program() {
+        use super::{Schedule, DateTimeBound};
+        use chrono::{NaiveTime, Weekday, Local, TimeZone};
+        let schedule = Schedule::new([NaiveTime::from_hms(10, 30, 0)].iter().map(|t| t.clone()),
+                                     [Weekday::Wed].iter().map(|t| t.clone()),
+                                     DateTimeBound::None,
+                                     DateTimeBound::None);
+        let date = schedule.next_run_after(&Local.ymd(2016, 11, 14).and_hms(10, 30, 0));
+        assert_eq!(date, Some(Local.ymd(2016, 11, 16).and_hms(10, 30, 0)));
     }
 }

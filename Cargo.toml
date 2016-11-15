@@ -7,5 +7,7 @@ authors = ["Alex Mikhalev <alexmikhalevalex@gmail.com>"]
 log = "0.3"
 env_logger = "0.3"
 signal = "0.3"
-# chrono = "0.2"
-chrono = { git = "https://github.com/amikhalev/rust-chrono.git", branch = "weekday-derive-hash" }
+chrono = { version = "0.2", features = [ "serde" ] }
+
+[replace]
+"chrono:0.2.25" = { git = "https://github.com/lifthrasiir/rust-chrono.git" }
