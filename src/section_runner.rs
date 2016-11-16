@@ -1,7 +1,7 @@
 //! Contains [SectionRunner](struct.SectionRunner.html)
 
 use std::time::{Duration, Instant};
-use std::sync::mpsc::{Sender, Receiver, channel, RecvTimeoutError};
+use std::sync::mpsc::{Sender, Receiver, channel};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::collections::VecDeque;
@@ -129,11 +129,7 @@ impl SectionRunner {
     /// Runs the thread which does all of the magic
     fn run(rx: Receiver<Op>) {
         use self::Op::*;
-        enum Sleep {
-            WaitForOp,
-            AtMost(Duration),
-            None,
-        }
+        use schedule::{Sleep, sleep_recv};
         struct Run {
             sec: Arc<Section>,
             dur: Duration,
@@ -141,23 +137,10 @@ impl SectionRunner {
             notify: Sender<RunNotification>,
         }
         let mut current_run: Option<Run> = None;
-        let mut sleep: Sleep = Sleep::WaitForOp;
+        let mut sleep: Sleep = Sleep::WaitForRecv;
         let mut queue: VecDeque<SecRun> = VecDeque::new();
         loop {
-            let op = match sleep {
-                Sleep::WaitForOp => Some(rx.recv().unwrap()),
-                Sleep::AtMost(dur) => {
-                    match rx.recv_timeout(dur) {
-                        Ok(recv) => Some(recv),
-                        Err(RecvTimeoutError::Timeout) => None,
-                        e @ Err(_) => {
-                            e.unwrap();
-                            unreachable!()
-                        }
-                    }
-                }
-                Sleep::None => None,
-            };
+            let op = sleep_recv(&sleep, &rx);
             trace!("SectionRunner op {:?}", op);
             if let Some(op) = op {
                 match op {
@@ -211,7 +194,7 @@ impl SectionRunner {
                             notify: run.notification_sender,
                         })
                     } else {
-                        sleep = Sleep::WaitForOp;
+                        sleep = Sleep::WaitForRecv;
                         None
                     }
                 }
