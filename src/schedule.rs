@@ -5,11 +5,21 @@ use std::iter::FromIterator;
 use std::cmp;
 use chrono::{DateTime, Date, Datelike, TimeZone, Local, NaiveTime, Weekday, Duration as CDuration};
 
-type TimeSet = BTreeSet<NaiveTime>;
-type WeekdaySet = HashSet<Weekday>;
+/// A set of times of day (for [Schedule](struct.Schedule.html))
+pub type TimeSet = BTreeSet<NaiveTime>;
+/// A set of days of week (for [Schedule](struct.Schedule.html))
+pub type WeekdaySet = HashSet<Weekday>;
+
+/// Returns a [WeekdaySet](type.WeekdaySet.html) of every day of the week
+pub fn every_day() -> WeekdaySet {
+    use num::FromPrimitive;
+    (0..7)
+        .map(|i| Weekday::from_u32(i).unwrap())
+        .collect()
+}
 
 /// Represents the different types of date-time bounds that can be on a schedule
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum DateTimeBound {
     /// There is no bound (ie. the Schedule extends with no limit)
     None,
@@ -47,7 +57,7 @@ impl DateTimeBound {
 }
 
 /// A schedule that determines when an event will occur.
-#[derive(Default, Debug)]
+#[derive(Default, Debug, Clone)]
 pub struct Schedule {
     times: TimeSet,
     weekdays: WeekdaySet,
@@ -181,8 +191,8 @@ mod test {
     fn test_schedule() {
         use super::{Schedule, DateTimeBound};
         use chrono::{DateTime, NaiveTime, Weekday, Local, TimeZone};
-        let schedule = Schedule::new([NaiveTime::from_hms(10, 30, 0)].iter().map(|t| t.clone()),
-                                     [Weekday::Wed].iter().map(|t| t.clone()),
+        let schedule = Schedule::new(vec![NaiveTime::from_hms(10, 30, 0)],
+                                     vec![Weekday::Wed],
                                      DateTimeBound::None,
                                      DateTimeBound::None);
         let cases: Vec<(DateTime<Local>, Option<DateTime<Local>>)> =

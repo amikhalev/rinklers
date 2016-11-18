@@ -25,10 +25,10 @@ pub enum Sleep {
 /// received.
 pub fn sleep_recv<T>(sleep: &Sleep, rx: &Receiver<T>) -> Option<T> {
     use self::Sleep::*;
-    match sleep {
-        &WaitForRecv => Some(rx.recv().unwrap()),
-        &AtMost(dur) => {
-            match rx.recv_timeout(dur) {
+    match *sleep {
+        WaitForRecv => Some(rx.recv().unwrap()),
+        AtMost(ref dur) => {
+            match rx.recv_timeout(dur.clone()) {
                 Ok(recv) => Some(recv),
                 Err(RecvTimeoutError::Timeout) => Option::None,
                 e @ Err(_) => {
@@ -37,7 +37,7 @@ pub fn sleep_recv<T>(sleep: &Sleep, rx: &Receiver<T>) -> Option<T> {
                 }
             }
         }
-        &None => Option::None,
+        None => Option::None,
     }
 }
 
@@ -52,14 +52,12 @@ impl PartialOrd for Sleep {
 impl Ord for Sleep {
     fn cmp(&self, other: &Self) -> Ordering {
         use self::Sleep::*;
-        match (self, other) {
-            (&WaitForRecv, &WaitForRecv) |
-            (&None, &None) => Ordering::Equal,
-            (&WaitForRecv, _) |
-            (_, &None) => Ordering::Greater,
-            (_, &WaitForRecv) |
-            (&None, _) => Ordering::Less,
-            (&AtMost(ref dur1), &AtMost(ref dur2)) => dur1.cmp(dur2),
+        match (self.clone(), other.clone()) {
+            (WaitForRecv, WaitForRecv) |
+            (None, None) => Ordering::Equal,
+            (WaitForRecv, _) | (_, None) => Ordering::Greater,
+            (_, WaitForRecv) | (None, _) => Ordering::Less,
+            (AtMost(ref dur1), AtMost(ref dur2)) => dur1.cmp(dur2),
         }
     }
 }
@@ -99,17 +97,18 @@ enum Op<E>
 {
     Quit,
     Schedule(Schedule, E::Data),
-    Cancel,
+    // Cancel,
 }
 
 impl<E> fmt::Debug for Op<E>
     where E: Executor + 'static
 {
     fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-        match self {
-            &Op::Quit => write!(formatter, "Quit"),
-            &Op::Schedule(ref sched, _) => write!(formatter, "Schedule({:?}, Data)", sched),
-            &Op::Cancel => write!(formatter, "Cancel"),
+        use self::Op::*;
+        match *self {
+            Quit => write!(formatter, "Quit"),
+            Schedule(ref sched, _) => write!(formatter, "Schedule({:?}, Data)", sched),
+            // Cancel => write!(formatter, "Cancel"),
         }
     }
 }
@@ -132,7 +131,10 @@ impl<E> ScheduleRunner<E>
     pub fn start_new(executor: E) -> ScheduleRunner<E> {
         let (send, recv) = channel();
         let join_handle = thread::spawn(move || Self::run(recv, executor));
-        ScheduleRunner { sender: send, join_handle: join_handle }
+        ScheduleRunner {
+            sender: send,
+            join_handle: join_handle,
+        }
     }
 
     /// Adds the specified `schedule`, running the executor with the specified `data` whenever the
@@ -184,9 +186,9 @@ impl<E> ScheduleRunner<E>
                         return;
                     }
                     Op::Schedule(sched, data) => runs.push(SchedRun::new(sched, data)),
-                    Op::Cancel => {
-                        unimplemented!();
-                    }
+                    // Op::Cancel => {
+                    //     unimplemented!();
+                    // }
                 }
             }
             sleep = Sleep::WaitForRecv;
@@ -215,17 +217,36 @@ mod test {
 
     #[test]
     fn test_schedule_runner() {
-        use schedule::Schedule;
+        use schedule::{DateTimeBound, Schedule};
+        use chrono::{Local, Datelike, Duration as CDuration};
         use std::time::Duration;
-        use std::sync::mpsc::channel;
+        use std::sync::mpsc::{Receiver, channel};
         let schedule_runner = ScheduleRunner::start_new(FnExecutor);
 
-        let schedule = Schedule::default();
+        let delay_time = CDuration::milliseconds(25);
+        let now = Local::now();
+        let run_time = now.time() + delay_time;
+        let today = now.weekday();
+        let schedule = Schedule::new(vec![run_time],
+                                     vec![today],
+                                     DateTimeBound::None,
+                                     DateTimeBound::None);
 
-        let (tx, rx) = channel::<()>();
-        schedule_runner.schedule(schedule, Box::new(move || { tx.send(()).unwrap(); }));
-
-        rx.recv_timeout(Duration::from_millis(50)).ok().expect("schedule did not run in time");
+        let mut rxs: Vec<Receiver<()>> = Vec::new();
+        for _ in 0..10 {
+            let (tx, rx) = channel::<()>();
+            schedule_runner.schedule(schedule.clone(),
+                                     Box::new(move || {
+                                         tx.send(()).unwrap();
+                                     }));
+            rxs.push(rx);
+        }
+        for rx in &rxs {
+            rx.recv_timeout(Duration::from_millis(50)).ok().expect("schedule did not run in time");
+        }
+        for rx in &rxs {
+            rx.recv_timeout(Duration::from_millis(50)).err().expect("schedule ran again when it should not have");
+        }
 
         schedule_runner.stop();
     }

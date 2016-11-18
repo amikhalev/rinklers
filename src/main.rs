@@ -7,6 +7,7 @@ extern crate log;
 extern crate env_logger;
 extern crate signal;
 extern crate chrono;
+extern crate num;
 
 pub mod section;
 pub mod section_runner;
