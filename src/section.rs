@@ -28,34 +28,121 @@ impl fmt::Debug for Section {
     }
 }
 
-/// A [Section](trait.Section.html) implementation which does not perform any actions besides
-/// logging.
-pub struct LogSection {
+/// A [Section](trait.Section.html) which holds a name and state, but performs no real world
+/// actions
+pub struct NoopSection {
     name: String,
     state: AtomicBool,
 }
 
-impl LogSection {
-    /// Creates a new `LogSection` with the specified `name`
-    pub fn new<S: Into<String>>(name: S) -> LogSection {
-        LogSection {
+impl NoopSection {
+    /// Creates a new `NoopSection` with the specified `name` and `false` for the state.
+    pub fn new<S: Into<String>>(name: S) -> Self {
+        NoopSection {
             name: name.into(),
             state: AtomicBool::new(false),
         }
     }
 }
 
-impl Section for LogSection {
+impl Section for NoopSection {
+    #[inline]
     fn name(&self) -> &String {
         &self.name
     }
 
+    #[inline]
     fn set_state(&self, state: bool) {
-        debug!("setting section {} state to {}", self.name, state);
         self.state.store(state, Ordering::Relaxed);
     }
 
+    #[inline]
     fn state(&self) -> bool {
         self.state.load(Ordering::Relaxed)
+    }
+}
+
+/// A [Section](trait.Section.html) implementation which wraps another section and adds logging for
+/// whenever the state is set
+pub struct LogSection<S: Section> {
+    section: S,
+}
+
+impl<S: Section> LogSection<S> {
+    /// Creates a new `LogSection` wrapping the specified `section`
+    pub fn new(section: S) -> Self {
+        Self { section: section }
+    }
+}
+
+impl LogSection<NoopSection> {
+    /// Creates a new `LogSection` wrapping a `NoopSection`, essentially a section only logging and
+    /// storing state.
+    pub fn new_noop(name: String) -> Self {
+        Self::new(NoopSection::new(name))
+    }
+}
+
+impl<S: Section> Section for LogSection<S> {
+    #[inline]
+    fn name(&self) -> &String {
+        self.section.name()
+    }
+
+    #[inline]
+    fn set_state(&self, state: bool) {
+        debug!("setting section {} state to {}", self.name(), state);
+        self.section.set_state(state);
+    }
+
+    #[inline]
+    fn state(&self) -> bool {
+        self.section.state()
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    pub struct TestSection<S, F>
+        where S: Section,
+              F: Fn(bool) + Send + Sync + 'static
+    {
+        section: S,
+        fun: F,
+    }
+
+    impl<S, F> TestSection<S, F>
+        where S: Section,
+              F: Fn(bool) + Send + Sync + 'static
+    {
+        pub fn new(section: S, fun: F) -> Self {
+            Self {
+                section: section,
+                fun: fun,
+            }
+        }
+    }
+
+    impl<S, F> Section for TestSection<S, F>
+        where S: Section,
+              F: Fn(bool) + Send + Sync + 'static
+    {
+        #[inline]
+        fn name(&self) -> &String {
+            &self.section.name()
+        }
+
+        #[inline]
+        fn set_state(&self, state: bool) {
+            (self.fun)(state);
+            self.section.set_state(state);
+        }
+
+        #[inline]
+        fn state(&self) -> bool {
+            self.section.state()
+        }
     }
 }

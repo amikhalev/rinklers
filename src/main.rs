@@ -42,7 +42,7 @@ fn main() {
     info!("initializing sections");
     sections = (0..6)
         .map(|i| format!("Section {}", i + 1))
-        .map(|name| Arc::new(LogSection::new(name)) as Arc<Section>)
+        .map(|name| Arc::new(LogSection::new_noop(name)) as Arc<Section>)
         .collect();
 
     for section in sections.iter_mut() {
