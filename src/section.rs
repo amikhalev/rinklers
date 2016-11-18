@@ -4,8 +4,7 @@
 //! real-world control of section state (ie. a GPIO pin).
 
 use std::fmt;
-use std::sync::Mutex;
-use std::cell::Cell;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Represents a single zone in the sprinkler system. Structs that implement this trait must be
 /// thread-safe, as is indicated by the `Send + Sync` trait bound.
@@ -33,7 +32,7 @@ impl fmt::Debug for Section {
 /// logging.
 pub struct LogSection {
     name: String,
-    state: Mutex<Cell<bool>>,
+    state: AtomicBool,
 }
 
 impl LogSection {
@@ -41,7 +40,7 @@ impl LogSection {
     pub fn new<S: Into<String>>(name: S) -> LogSection {
         LogSection {
             name: name.into(),
-            state: Mutex::new(Cell::new(false)),
+            state: AtomicBool::new(false),
         }
     }
 }
@@ -53,10 +52,10 @@ impl Section for LogSection {
 
     fn set_state(&self, state: bool) {
         debug!("setting section {} state to {}", self.name, state);
-        self.state.lock().unwrap().set(state);
+        self.state.store(state, Ordering::Relaxed);
     }
 
     fn state(&self) -> bool {
-        self.state.lock().unwrap().get()
+        self.state.load(Ordering::Relaxed)
     }
 }
