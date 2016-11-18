@@ -129,7 +129,7 @@ impl SectionRunner {
     /// Runs the thread which does all of the magic
     fn run(rx: Receiver<Op>) {
         use self::Op::*;
-        use schedule::{Sleep, sleep_recv};
+        use schedule_runner::{Sleep, sleep_recv};
         struct Run {
             sec: Arc<Section>,
             dur: Duration,

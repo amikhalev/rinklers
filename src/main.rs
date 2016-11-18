@@ -12,6 +12,7 @@ pub mod section;
 pub mod section_runner;
 pub mod program;
 pub mod schedule;
+pub mod schedule_runner;
 
 use std::time::Duration;
 use std::env;

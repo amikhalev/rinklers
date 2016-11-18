@@ -3,7 +3,6 @@
 use std::collections::{BTreeSet, HashSet};
 use std::iter::FromIterator;
 use std::cmp;
-use std::time::Duration;
 use chrono::{DateTime, Date, Datelike, TimeZone, Local, NaiveTime, Weekday, Duration as CDuration};
 
 type TimeSet = BTreeSet<NaiveTime>;
@@ -29,7 +28,7 @@ impl Default for DateTimeBound {
 impl DateTimeBound {
     /// Resolves this bound into an optional `DateTime`. If there is no bound or the bound could
     /// not be resolved, None is returned.
-    /// 
+    ///
     /// `date` is the reference that is used to resolve a `Yearly` bound.
     pub fn resolve_from(&self, date: &DateTime<Local>) -> Option<DateTime<Local>> {
         match *self {
@@ -40,7 +39,7 @@ impl DateTimeBound {
     }
 
     /// Resolves this bound with the current date and time
-    /// 
+    ///
     /// See [resolve_from](#method.resolve_from)
     pub fn resolve(&self) -> Option<DateTime<Local>> {
         self.resolve_from(&Local::now())
@@ -84,7 +83,7 @@ impl Schedule {
     }
 
     /// Gets the next `DateTime` the event should run after `reference`
-    /// 
+    ///
     /// Returns `None` if the event will never run after `reference` (ie. must be a `from` bound)
     pub fn next_run_after(&self, reference: &DateTime<Local>) -> Option<DateTime<Local>> {
         let to = self.to.resolve_from(reference);
@@ -122,230 +121,80 @@ impl Schedule {
     }
 
     /// Gets the next run after the current time
-    /// 
+    ///
     /// See [next_run_after](#method.next_run_after)
     pub fn next_run(&self) -> Option<DateTime<Local>> {
         self.next_run_after(&Local::now())
     }
 }
 
-use std::sync::mpsc::{channel, Sender, Receiver, RecvTimeoutError};
-use std::thread;
-use std::fmt;
-
-/// A time to sleep for using a method receive with a timeout
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Sleep {
-    /// Just wait for the next received message (use `Receiver.recv`)
-    WaitForRecv,
-    /// Wait for the specified duration (use `Receiver.recv_timeout`)
-    AtMost(Duration),
-    /// Don't wait at all and return None immediately
-    None,
-}
-
-/// Receives from the specified `Receiver`, while also sleeping for whatever amount `sleep` is.
-/// 
-/// Returns None if Sleep was None or if the timeout was reached. Returns Some if a message was
-/// received.
-pub fn sleep_recv<T>(sleep: &Sleep, rx: &Receiver<T>) -> Option<T> {
-    use self::Sleep::*;
-    match sleep {
-        &WaitForRecv => Some(rx.recv().unwrap()),
-        &AtMost(dur) => {
-            match rx.recv_timeout(dur) {
-                Ok(recv) => Some(recv),
-                Err(RecvTimeoutError::Timeout) => Option::None,
-                e @ Err(_) => {
-                    e.unwrap();
-                    unreachable!()
-                }
-            }
-        }
-        &None => Option::None,
-    }
-}
-
-use std::cmp::{PartialOrd, Ordering};
-
-impl PartialOrd for Sleep {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl Ord for Sleep {
-    fn cmp(&self, other: &Self) -> Ordering {
-        use self::Sleep::*;
-        match (self, other) {
-            (&WaitForRecv, &WaitForRecv) |
-            (&None, &None) => Ordering::Equal,
-            (&WaitForRecv, _) |
-            (_, &None) => Ordering::Greater,
-            (_, &WaitForRecv) |
-            (&None, _) => Ordering::Less,
-            (&AtMost(ref dur1), &AtMost(ref dur2)) => dur1.cmp(dur2),
-        }
-    }
-}
-
-/// Executes events triggered by a [ScheduleRunner](struct.ScheduleRunner.html)
-pub trait Executor: Send {
-    /// The data that is stored by the `ScheduleRunner` when the event is scheduled and that will
-    /// be passed to the executor when the event is triggered.
-    type Data: Send + 'static;
-
-    /// Executed when an event is triggered
-    fn execute(&self, data: &Self::Data);
-}
-
-/// An [Executor](trait.Executor.html) that doesn't do anything
-pub struct NoopExecutor;
-
-impl Executor for NoopExecutor {
-    type Data = ();
-
-    fn execute(&self, _: &Self::Data) {}
-}
-
-/// An [Executor](trait.Executor.html) that runs a Fn()
-pub struct FnExecutor;
-
-impl Executor for FnExecutor {
-    type Data = Box<Fn() + Send>;
-
-    fn execute(&self, data: &Self::Data) {
-        data();
-    }
-}
-
-enum Op<E>
-    where E: Executor + 'static
-{
-    Quit,
-    Schedule(Schedule, E::Data),
-    Cancel,
-}
-
-impl<E> fmt::Debug for Op<E>
-    where E: Executor + 'static
-{
-    fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-        match self {
-            &Op::Quit => write!(formatter, "Quit"),
-            &Op::Schedule(ref sched, _) => write!(formatter, "Schedule({:?}, Data)", sched),
-            &Op::Cancel => write!(formatter, "Cancel"),
-        }
-    }
-}
-
-/// Keeps track of [Schedule](struct.Schedule.html)s and executes events when they are triggered by
-/// the schedules
-pub struct ScheduleRunner<E>
-    where E: Executor + 'static
-{
-    sender: Sender<Op<E>>,
-}
-
-impl<E> ScheduleRunner<E>
-    where E: Executor
-{
-    /// Starts a new `ScheduleRunner` using the specified `Executor`
-    pub fn start_new(executor: E) -> ScheduleRunner<E> {
-        let (send, recv) = channel();
-        thread::spawn(move || Self::run(recv, executor));
-        ScheduleRunner { sender: send }
-    }
-
-    /// Adds the specified `schedule`, running the executor with the specified `data` whenever the
-    /// schedule triggers it.
-    pub fn schedule(&self, schedule: Schedule, data: E::Data) {
-        self.sender.send(Op::Schedule(schedule, data)).unwrap();
-    }
-
-    /// Stops the `ScheduleRunner`
-    pub fn stop(self) {
-        self.sender.send(Op::Quit).unwrap();
-        // drops self
-    }
-
-    fn run(recv: Receiver<Op<E>>, executor: E) {
-        struct SchedRun<E: Executor> {
-            sched: Schedule,
-            data: E::Data,
-            next_run: Option<DateTime<Local>>,
-        }
-        impl<E: Executor> SchedRun<E> {
-            fn new(sched: Schedule, data: E::Data) -> Self {
-                let next_run = sched.next_run();
-                SchedRun {
-                    sched: sched,
-                    data: data,
-                    next_run: next_run,
-                }
-            }
-
-            fn till_run(&self) -> Option<CDuration> {
-                self.next_run.map(|next_run| next_run - Local::now())
-            }
-
-            fn update_next_run(&mut self) -> Option<DateTime<Local>> {
-                self.next_run = self.sched.next_run();
-                self.next_run
-            }
-        }
-        let mut runs: Vec<SchedRun<E>> = Vec::new();
-        let mut sleep = Sleep::WaitForRecv;
-        loop {
-            let op = sleep_recv(&sleep, &recv);
-            trace!("ScheduleRunner op {:?}", op);
-            if let Some(op) = op {
-                match op {
-                    Op::Quit => {
-                        debug!("quitting ScheduleRunner");
-                        return;
-                    }
-                    Op::Schedule(sched, data) => runs.push(SchedRun::new(sched, data)),
-                    Op::Cancel => {
-                        unimplemented!();
-                    }
-                }
-            }
-            sleep = Sleep::WaitForRecv;
-            for run in &mut runs {
-                if let Some(left) = run.till_run() {
-                    if left <= CDuration::zero() {
-                        // if the time left is less than or equal to zero, it is time for the
-                        // event to run
-                        executor.execute(&run.data);
-                        run.update_next_run();
-                    } else {
-                        // otherwise, sleep until it is time to run
-                        let left = left.to_std().unwrap();
-                        sleep = cmp::min(sleep, Sleep::AtMost(left));
-                    }
-                }
-            }
-            runs.retain(|run| run.next_run.is_some()); // remove all runs that will never occur
-        }
-    }
-}
-
 #[cfg(test)]
 mod test {
+    use super::*;
+
     #[test]
-    fn test_program() {
+    fn test_date_time_bound() {
+        use super::DateTimeBound::*;
+        use chrono::{DateTime, Local, TimeZone};
+
+        let cases: Vec<(DateTimeBound, Option<DateTime<Local>>)> = vec![
+            (None, Option::None),
+            (Definite(Local.ymd(2016, 11, 16).and_hms(10, 30, 0)),
+                Some(Local.ymd(2016, 11, 16).and_hms(10, 30, 0))),
+            (Yearly(Local.ymd(2016, 11, 16).and_hms(10, 30, 0)),
+                Some(Local.ymd(2018, 11, 16).and_hms(10, 30, 0))),
+            (Yearly(Local.ymd(2016, 1, 1).and_hms(0, 0, 0)),
+                Some(Local.ymd(2018, 1, 1).and_hms(0, 0, 0))),
+            (Yearly(Local.ymd(2016, 12, 31).and_hms(23, 59, 59)),
+                Some(Local.ymd(2018, 12, 31).and_hms(23, 59, 59))),
+            (Yearly(Local.ymd(2012, 2, 29).and_hms(0, 0, 0)),
+                Option::None), // leap day
+        ];
+        let from = Local.ymd(2018, 1, 1).and_hms(0, 0, 0);
+
+        for (bound, expected_result) in cases {
+            let result = bound.resolve_from(&from);
+            assert_eq!(result, expected_result);
+        }
+    }
+
+    #[test]
+    fn test_next_weekday() {
+        use super::next_weekday;
+        use chrono::{Date, Local, TimeZone, Weekday};
+        // (date, weekday, result)
+        let cases: Vec<(Date<Local>, Weekday, Date<Local>)> = vec![
+            (Local.ymd(2016, 11, 16), Weekday::Wed, Local.ymd(2016, 11, 16)),
+            (Local.ymd(2016, 11, 16), Weekday::Fri, Local.ymd(2016, 11, 18)),
+            (Local.ymd(2016, 11, 16), Weekday::Tue, Local.ymd(2016, 11, 22)),
+            (Local.ymd(2016, 12, 30), Weekday::Tue, Local.ymd(2017, 1, 3)),
+            (Local.ymd(2016, 11, 16), Weekday::Tue, Local.ymd(2016, 11, 22)),
+        ];
+
+        for (date, weekday, expected_result) in cases {
+            let result = next_weekday(&date, &weekday);
+            assert_eq!(result, expected_result);
+        }
+    }
+
+    #[test]
+    fn test_schedule() {
         use super::{Schedule, DateTimeBound};
-        use chrono::{NaiveTime, Weekday, Local, TimeZone};
+        use chrono::{DateTime, NaiveTime, Weekday, Local, TimeZone};
         let schedule = Schedule::new([NaiveTime::from_hms(10, 30, 0)].iter().map(|t| t.clone()),
                                      [Weekday::Wed].iter().map(|t| t.clone()),
                                      DateTimeBound::None,
                                      DateTimeBound::None);
-        let date = schedule.next_run_after(&Local.ymd(2016, 11, 14).and_hms(10, 30, 0));
-        assert_eq!(date, Some(Local.ymd(2016, 11, 16).and_hms(10, 30, 0)));
-        let date = schedule.next_run_after(&Local.ymd(2016, 11, 16).and_hms(10, 20, 0));
-        assert_eq!(date, Some(Local.ymd(2016, 11, 16).and_hms(10, 30, 0)));
-        let date = schedule.next_run_after(&Local.ymd(2016, 11, 16).and_hms(10, 40, 0));
-        assert_eq!(date, Some(Local.ymd(2016, 11, 23).and_hms(10, 30, 0)));
+        let cases: Vec<(DateTime<Local>, Option<DateTime<Local>>)> =
+            vec![(Local.ymd(2016, 11, 14).and_hms(10, 30, 0),
+                  Some(Local.ymd(2016, 11, 16).and_hms(10, 30, 0))),
+                 (Local.ymd(2016, 11, 16).and_hms(10, 20, 0),
+                  Some(Local.ymd(2016, 11, 16).and_hms(10, 30, 0))),
+                 (Local.ymd(2016, 11, 16).and_hms(10, 40, 0),
+                  Some(Local.ymd(2016, 11, 23).and_hms(10, 30, 0)))];
+        for (reference, expected_result) in cases {
+            let result = schedule.next_run_after(&reference);
+            assert_eq!(result, expected_result);
+        }
     }
 }
