@@ -71,7 +71,7 @@ pub struct LogSection<S: Section> {
 impl<S: Section> LogSection<S> {
     /// Creates a new `LogSection` wrapping the specified `section`
     pub fn new(section: S) -> Self {
-        Self { section: section }
+        LogSection { section: section }
     }
 }
 
@@ -118,7 +118,7 @@ mod test {
               F: Fn(bool) + Send + Sync + 'static
     {
         pub fn new(section: S, fun: F) -> Self {
-            Self {
+            TestSection {
                 section: section,
                 fun: fun,
             }
