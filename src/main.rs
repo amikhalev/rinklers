@@ -8,6 +8,7 @@ extern crate env_logger;
 extern crate signal;
 extern crate chrono;
 extern crate num;
+extern crate colored;
 
 pub mod section;
 pub mod section_runner;
@@ -15,21 +16,33 @@ pub mod program;
 pub mod schedule;
 pub mod schedule_runner;
 
+pub use section::{Section, LogSection};
+pub use section_runner::SectionRunner;
+pub use program::Program;
+
 use std::time::Duration;
 use std::env;
 use std::sync::Arc;
 use signal::trap::Trap;
-use log::LogLevelFilter;
-use section::{Section, LogSection};
-use section_runner::SectionRunner;
-use program::Program;
 
 fn init_log() {
+    use log::{LogLevelFilter, LogLevel};
+    use colored::Colorize;
     let mut log_builder = env_logger::LogBuilder::new();
     log_builder.filter(Some("rinklers"), LogLevelFilter::Debug);
     if let Ok(s) = env::var("RUST_LOG") {
         log_builder.parse(&s);
     }
+    log_builder.format(|rec| {
+        let level_str = match rec.level() {
+            LogLevel::Trace => "[TRACE]".dimmed(),
+            LogLevel::Debug => "[DEBUG]".white().bold(),
+            LogLevel::Info => "[INFO]".cyan(),
+            LogLevel::Warn => "[WARN]".yellow(),
+            LogLevel::Error => "[ERROR]".red(),
+        };
+        format!("{:7} {:20} - {}", level_str, rec.location().module_path(), rec.args())
+    });
     log_builder.init().unwrap();
 }
 
