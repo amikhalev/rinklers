@@ -74,21 +74,46 @@ impl<E: Executor> fmt::Debug for SchedRun<E> {
     }
 }
 
-
 #[derive(Debug)]
-struct RunnerState<E>
+struct RunnerData<E>
     where E: Executor
 {
     quit: bool,
     runs: Vec<SchedRun<E>>,
 }
 
-impl<E: Executor> RunnerState<E> {
+impl<E: Executor> RunnerData<E> {
     fn new() -> Self {
-        RunnerState {
+        RunnerData {
             quit: false,
             runs: Vec::new(),
         }
+    }
+}
+
+struct RunnerState<E>
+    where E: Executor
+{
+    data: Mutex<RunnerData<E>>,
+    condvar: Condvar,
+}
+
+impl<E: Executor> RunnerState<E> {
+    fn new() -> Self {
+        RunnerState {
+            data: Mutex::new(RunnerData::new()),
+            condvar: Condvar::new(),
+        }
+    }
+
+    fn update<F>(&self, f: F)
+        where F: FnOnce(&mut RunnerData<E>)
+    {
+        {
+            let mut lock = self.data.lock().unwrap();
+            f(&mut *lock);
+        }
+        self.condvar.notify_one();
     }
 }
 
@@ -97,7 +122,7 @@ impl<E: Executor> RunnerState<E> {
 pub struct ScheduleRunner<E>
     where E: Executor + 'static
 {
-    state: Box<(Mutex<RunnerState<E>>, Condvar)>,
+    state: Box<RunnerState<E>>,
     join_handle: Option<JoinHandle<()>>,
     _phantom_data: PhantomData<E>,
 }
@@ -110,7 +135,7 @@ impl<E> ScheduleRunner<E>
     /// associated with it will be detached rather than stopped.
     pub fn start_new(executor: E) -> ScheduleRunner<E> {
         let mut runner = ScheduleRunner {
-            state: Box::new((Mutex::new(RunnerState::new()), Condvar::new())),
+            state: Box::new(RunnerState::new()),
             join_handle: None,
             _phantom_data: PhantomData::default(),
         };
@@ -118,38 +143,42 @@ impl<E> ScheduleRunner<E>
             // this should be ok, because all of the referenced data is stored in the same object
             // as the JoinHandle for the thread, and if it gets dropped the Drop impl should join
             // the thread.
-            let state: &'static Mutex<RunnerState<E>> = ::std::mem::transmute(&runner.state.0 as &Mutex<RunnerState<E>>);
-            let condvar: &'static Condvar = ::std::mem::transmute(&runner.state.1 as &Condvar);
-            Some(thread::spawn(move || Self::run(state, condvar, executor)))
+            let state: &'static RunnerState<E> =
+                ::std::mem::transmute(&*runner.state as &RunnerState<E>);
+            Some(thread::spawn(move || Self::run(state, executor)))
         };
         runner
     }
 
     /// Adds the specified `schedule`, running the executor with the specified `data` whenever the
     /// schedule triggers it.
-    pub fn schedule(&self, schedule: Schedule, data: E::Data) {
-        self.state.0.lock().unwrap().runs.push(SchedRun::new(schedule, data));
-        self.state.1.notify_one();
+    pub fn schedule(&self, schedule: Schedule, sched_data: E::Data) {
+        self.state.update(move |data| {
+            data.runs.push(SchedRun::new(schedule, sched_data));
+        });
     }
 
     /// Stops the `ScheduleRunner`, waiting for the thread to exit
     pub fn stop(self) {
-        self.state.0.lock().unwrap().quit = true;
-        self.state.1.notify_one();
+        self.state.update(|data| {
+            data.quit = true;
+        });
     }
 
-    fn run(state: &Mutex<RunnerState<E>>, condvar: &Condvar, executor: E) {
+    fn run(state: &RunnerState<E>, executor: E) {
+        let data = &state.data;
+        let condvar = &state.condvar;
         use wait_for::{WaitPeriod, wait_condvar};
         let mut wait_period = WaitPeriod::Wait;
         loop {
-            let mut state_lock = wait_condvar(&condvar, &state, &wait_period).unwrap();
-            // trace!("ScheduleRunner state {:?}", *state_lock);
-            if state_lock.quit {
+            let mut data_lock = wait_condvar(&condvar, &data, &wait_period).unwrap();
+            // trace!("ScheduleRunner state {:?}", *data_lock);
+            if data_lock.quit {
                 debug!("quitting ScheduleRunner");
                 return;
             }
             wait_period = WaitPeriod::Wait;
-            for run in &mut state_lock.runs {
+            for run in &mut data_lock.runs {
                 if let Some(left) = run.till_run() {
                     if left <= CDuration::zero() {
                         // if the time left is less than or equal to zero, it is time for the
@@ -163,7 +192,7 @@ impl<E> ScheduleRunner<E>
                 }
             }
             // only keep runs that will occur at some point in the future
-            state_lock.runs.retain(|run| run.next_run.is_some());
+            data_lock.runs.retain(|run| run.next_run.is_some());
         }
     }
 }
