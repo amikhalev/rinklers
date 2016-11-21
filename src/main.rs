@@ -1,5 +1,4 @@
 #![warn(missing_docs)]
-#![feature(conservative_impl_trait)]
 
 //! A program for managing a sprinkler system
 
