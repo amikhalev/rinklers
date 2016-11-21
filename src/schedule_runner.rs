@@ -1,66 +1,10 @@
 //! ScheduleRunner for executing events based on Schedules
 
-use std::sync::mpsc::{channel, Sender, Receiver, RecvTimeoutError};
-use std::time::Duration;
 use std::thread::{self, JoinHandle};
 use std::fmt;
 use std::cmp;
 use chrono::{DateTime, Local, Duration as CDuration};
 use schedule::Schedule;
-
-/// A time to sleep for using a method receive with a timeout
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Sleep {
-    /// Just wait for the next received message (use `Receiver.recv`)
-    WaitForRecv,
-    /// Wait for the specified duration (use `Receiver.recv_timeout`)
-    AtMost(Duration),
-    /// Don't wait at all and return None immediately
-    None,
-}
-
-/// Receives from the specified `Receiver`, while also sleeping for whatever amount `sleep` is.
-///
-/// Returns None if Sleep was None or if the timeout was reached. Returns Some if a message was
-/// received.
-pub fn sleep_recv<T>(sleep: &Sleep, rx: &Receiver<T>) -> Option<T> {
-    use self::Sleep::*;
-    match *sleep {
-        WaitForRecv => Some(rx.recv().unwrap()),
-        AtMost(ref dur) => {
-            match rx.recv_timeout(dur.clone()) {
-                Ok(recv) => Some(recv),
-                Err(RecvTimeoutError::Timeout) => Option::None,
-                e @ Err(_) => {
-                    e.unwrap();
-                    unreachable!()
-                }
-            }
-        }
-        None => Option::None,
-    }
-}
-
-use std::cmp::{PartialOrd, Ordering};
-
-impl PartialOrd for Sleep {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl Ord for Sleep {
-    fn cmp(&self, other: &Self) -> Ordering {
-        use self::Sleep::*;
-        match (self.clone(), other.clone()) {
-            (WaitForRecv, WaitForRecv) |
-            (None, None) => Ordering::Equal,
-            (WaitForRecv, _) | (_, None) => Ordering::Greater,
-            (_, WaitForRecv) | (None, _) => Ordering::Less,
-            (AtMost(ref dur1), AtMost(ref dur2)) => dur1.cmp(dur2),
-        }
-    }
-}
 
 /// Executes events triggered by a [ScheduleRunner](struct.ScheduleRunner.html)
 pub trait Executor: Send {
@@ -92,23 +36,58 @@ impl Executor for FnExecutor {
     }
 }
 
-enum Op<E>
-    where E: Executor + 'static
-{
-    Quit,
-    Schedule(Schedule, E::Data),
-    // Cancel,
+use std::sync::{Mutex, Condvar};
+use std::marker::PhantomData;
+
+struct SchedRun<E: Executor> {
+    sched: Schedule,
+    data: E::Data,
+    next_run: Option<DateTime<Local>>,
 }
 
-impl<E> fmt::Debug for Op<E>
-    where E: Executor + 'static
+impl<E: Executor> SchedRun<E> {
+    fn new(sched: Schedule, data: E::Data) -> Self {
+        let next_run = sched.next_run();
+        SchedRun {
+            sched: sched,
+            data: data,
+            next_run: next_run,
+        }
+    }
+
+    fn till_run(&self) -> Option<CDuration> {
+        self.next_run.map(|next_run| next_run - Local::now())
+    }
+
+    fn update_next_run(&mut self) -> Option<DateTime<Local>> {
+        self.next_run = self.sched.next_run();
+        self.next_run
+    }
+}
+
+impl<E: Executor> fmt::Debug for SchedRun<E> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f,
+               "SchedRun {{ sched: {:?}, data: .., next_run: {:?} }}",
+               self.sched,
+               self.next_run)
+    }
+}
+
+
+#[derive(Debug)]
+struct RunnerState<E>
+    where E: Executor
 {
-    fn fmt(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-        use self::Op::*;
-        match *self {
-            Quit => write!(formatter, "Quit"),
-            Schedule(ref sched, _) => write!(formatter, "Schedule({:?}, Data)", sched),
-            // Cancel => write!(formatter, "Cancel"),
+    quit: bool,
+    runs: Vec<SchedRun<E>>,
+}
+
+impl<E: Executor> RunnerState<E> {
+    fn new() -> Self {
+        RunnerState {
+            quit: false,
+            runs: Vec::new(),
         }
     }
 }
@@ -118,8 +97,9 @@ impl<E> fmt::Debug for Op<E>
 pub struct ScheduleRunner<E>
     where E: Executor + 'static
 {
-    sender: Sender<Op<E>>,
-    join_handle: JoinHandle<()>,
+    state: Box<(Mutex<RunnerState<E>>, Condvar)>,
+    join_handle: Option<JoinHandle<()>>,
+    _phantom_data: PhantomData<E>,
 }
 
 impl<E> ScheduleRunner<E>
@@ -129,84 +109,71 @@ impl<E> ScheduleRunner<E>
     /// Note: if the `ScheduleRunner` is dropped without calling [stop](#method.stop), the thread
     /// associated with it will be detached rather than stopped.
     pub fn start_new(executor: E) -> ScheduleRunner<E> {
-        let (send, recv) = channel();
-        let join_handle = thread::spawn(move || Self::run(recv, executor));
-        ScheduleRunner {
-            sender: send,
-            join_handle: join_handle,
-        }
+        let mut runner = ScheduleRunner {
+            state: Box::new((Mutex::new(RunnerState::new()), Condvar::new())),
+            join_handle: None,
+            _phantom_data: PhantomData::default(),
+        };
+        runner.join_handle = unsafe {
+            // this should be ok, because all of the referenced data is stored in the same object
+            // as the JoinHandle for the thread, and if it gets dropped the Drop impl should join
+            // the thread.
+            let state: &'static Mutex<RunnerState<E>> = ::std::mem::transmute(&runner.state.0 as &Mutex<RunnerState<E>>);
+            let condvar: &'static Condvar = ::std::mem::transmute(&runner.state.1 as &Condvar);
+            Some(thread::spawn(move || Self::run(state, condvar, executor)))
+        };
+        runner
     }
 
     /// Adds the specified `schedule`, running the executor with the specified `data` whenever the
     /// schedule triggers it.
     pub fn schedule(&self, schedule: Schedule, data: E::Data) {
-        self.sender.send(Op::Schedule(schedule, data)).unwrap();
+        self.state.0.lock().unwrap().runs.push(SchedRun::new(schedule, data));
+        self.state.1.notify_one();
     }
 
     /// Stops the `ScheduleRunner`, waiting for the thread to exit
     pub fn stop(self) {
-        self.sender.send(Op::Quit).unwrap();
-        self.join_handle.join().unwrap();
+        self.state.0.lock().unwrap().quit = true;
+        self.state.1.notify_one();
     }
 
-    fn run(recv: Receiver<Op<E>>, executor: E) {
-        struct SchedRun<E: Executor> {
-            sched: Schedule,
-            data: E::Data,
-            next_run: Option<DateTime<Local>>,
-        }
-        impl<E: Executor> SchedRun<E> {
-            fn new(sched: Schedule, data: E::Data) -> Self {
-                let next_run = sched.next_run();
-                SchedRun {
-                    sched: sched,
-                    data: data,
-                    next_run: next_run,
-                }
-            }
-
-            fn till_run(&self) -> Option<CDuration> {
-                self.next_run.map(|next_run| next_run - Local::now())
-            }
-
-            fn update_next_run(&mut self) -> Option<DateTime<Local>> {
-                self.next_run = self.sched.next_run();
-                self.next_run
-            }
-        }
-        let mut runs: Vec<SchedRun<E>> = Vec::new();
-        let mut sleep = Sleep::WaitForRecv;
+    fn run(state: &Mutex<RunnerState<E>>, condvar: &Condvar, executor: E) {
+        use wait_for::{WaitPeriod, wait_condvar};
+        let mut wait_period = WaitPeriod::Wait;
         loop {
-            let op = sleep_recv(&sleep, &recv);
-            trace!("ScheduleRunner op {:?}", op);
-            if let Some(op) = op {
-                match op {
-                    Op::Quit => {
-                        debug!("quitting ScheduleRunner");
-                        return;
-                    }
-                    Op::Schedule(sched, data) => runs.push(SchedRun::new(sched, data)),
-                    // Op::Cancel => {
-                    //     unimplemented!();
-                    // }
-                }
+            let mut state_lock = wait_condvar(&condvar, &state, &wait_period).unwrap();
+            // trace!("ScheduleRunner state {:?}", *state_lock);
+            if state_lock.quit {
+                debug!("quitting ScheduleRunner");
+                return;
             }
-            sleep = Sleep::WaitForRecv;
-            for run in &mut runs {
+            wait_period = WaitPeriod::Wait;
+            for run in &mut state_lock.runs {
                 if let Some(left) = run.till_run() {
                     if left <= CDuration::zero() {
                         // if the time left is less than or equal to zero, it is time for the
                         // event to run
                         executor.execute(&run.data);
                         run.update_next_run();
-                    } else {
-                        // otherwise, sleep until it is time to run
-                        let left = left.to_std().unwrap();
-                        sleep = cmp::min(sleep, Sleep::AtMost(left));
                     }
+                    // sleep until it is time to run
+                    let left = left.to_std().unwrap();
+                    wait_period = cmp::min(wait_period, WaitPeriod::AtMost(left));
                 }
             }
-            runs.retain(|run| run.next_run.is_some()); // remove all runs that will never occur
+            // only keep runs that will occur at some point in the future
+            state_lock.runs.retain(|run| run.next_run.is_some());
+        }
+    }
+}
+
+impl<E: Executor> Drop for ScheduleRunner<E> {
+    fn drop(&mut self) {
+        // waits for the thread to finish, because it references data stored in self, so it cannot
+        // outlive self
+        if let Some(join_handle) = self.join_handle.take() {
+            join_handle.join().unwrap();
         }
     }
 }
@@ -245,7 +212,9 @@ mod test {
             rx.recv_timeout(Duration::from_millis(50)).ok().expect("schedule did not run in time");
         }
         for rx in &rxs {
-            rx.recv_timeout(Duration::from_millis(50)).err().expect("schedule ran again when it should not have");
+            rx.recv_timeout(Duration::from_millis(50))
+                .err()
+                .expect("schedule ran again when it should not have");
         }
 
         schedule_runner.stop();

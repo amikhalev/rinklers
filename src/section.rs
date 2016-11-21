@@ -5,6 +5,7 @@
 
 use std::fmt;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 /// Represents a single zone in the sprinkler system. Structs that implement this trait must be
 /// thread-safe, as is indicated by the `Send + Sync` trait bound.
@@ -27,6 +28,9 @@ impl fmt::Debug for Section {
                self.state())
     }
 }
+
+/// A reference to a `Section` trait object (specifically an `Arc`)
+pub type SectionRef = Arc<Section>;
 
 /// A [Section](trait.Section.html) which holds a name and state, but performs no real world
 /// actions

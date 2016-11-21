@@ -1,19 +1,25 @@
 //! Contains [Program](struct.Program.html)
 
-use std::sync::mpsc::Receiver;
 use std::sync::Arc;
 use std::iter::FromIterator;
 use std::time::Duration;
 use section::Section;
-use section_runner::{SectionRunner, RunNotification};
+use section_runner::{SectionRunner, RunNotification, RunNotifier};
+use schedule::Schedule;
 
-type ProgItem = (Arc<Section>, Duration);
+/// A single item in the sequence of execution of a program. Contains an `Arc` to a section to run
+/// and a `Duration` to run it for.
+pub type ProgItem = (Arc<Section>, Duration);
 
 /// A list of sections and times, which can be run in sequence or be scheduled to run at certain
 /// times
 pub struct Program {
-    name: String,
-    sequence: Vec<ProgItem>,
+    /// The name of the Program
+    pub name: String,
+    /// The sequence of items to run for the program
+    pub sequence: Vec<ProgItem>,
+    /// The `Schedule` that determines when the program will be run
+    pub schedule: Schedule,
 }
 
 impl Program {
@@ -27,36 +33,36 @@ impl Program {
     /// use rinklers::*;
     /// let section = LogSection::new("Test Section");
     /// let program = Program::new("Test Program",
-    ///     [(section, std::time::Duration::from_seconds(10))]
-    ///         .iter()
-    ///         .clone()); // Must clone because this expects an iter of tuples, not references
+    ///     vec![(section, std::time::Duration::from_seconds(10))],
+    ///     Schedule::default());
     /// ```
-    pub fn new<S: Into<String>, I: IntoIterator<Item = ProgItem>>(name: S, sequence: I) -> Program {
+    pub fn new<S: Into<String>, I: IntoIterator<Item = ProgItem>>(name: S,
+                                                                  sequence: I,
+                                                                  schedule: Schedule)
+                                                                  -> Program {
         Program {
             name: name.into(),
             sequence: Vec::from_iter(sequence),
+            schedule: schedule,
         }
     }
 
-    /// Gets the name of the `Program`
-    pub fn name(&self) -> &String {
-        &self.name
+    /// Runs the program, using `runner` to queue each section to be run for each specified period
+    /// of time. Return the `RunNotifier`s for all of the sections that were queued
+    pub fn queue_run<'a, 'b>(&'a self, runner: &'b SectionRunner) -> Vec<RunNotifier> {
+        self.sequence
+            .iter()
+            .map(|item| runner.run_section(item.0.clone(), item.1))
+            .collect()
     }
 
-    /// Runs the program, using `runner` to run each section for the period of time
-    pub fn run(&self, runner: &SectionRunner) {
+    /// Runs this program synchronously, blocking until the whole program finishes before returning.
+    pub fn run_sync(&self, runner: &SectionRunner) {
         debug!("running program {}", self.name);
-        let mut iter = self.sequence.iter().peekable();
-        let mut notifier: Option<Receiver<RunNotification>> = None;
-        while let Some(item) = iter.next() {
-            let run_notifier = runner.run_section(item.0.clone(), item.1);
-            if iter.peek().is_none() {
-                notifier = Some(run_notifier);
-            }
-        }
-        if let Some(notifier) = notifier {
-            loop {
-                match notifier.recv().unwrap() {
+        let notifiers = self.queue_run(runner);
+        if let Some(notifier) = notifiers.last() {
+            for notification in notifier {
+                match notification {
                     RunNotification::Finish |
                     RunNotification::Interrupted => break,
                     _ => continue,
@@ -66,3 +72,6 @@ impl Program {
         debug!("finished running program {}", self.name);
     }
 }
+
+/// A reference to a `Program` (specifically `Arc`)
+pub type ProgramRef = Arc<Program>;

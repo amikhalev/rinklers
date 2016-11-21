@@ -1,4 +1,5 @@
 #![warn(missing_docs)]
+#![feature(conservative_impl_trait)]
 
 //! A program for managing a sprinkler system
 
@@ -13,12 +14,16 @@ extern crate colored;
 pub mod section;
 pub mod section_runner;
 pub mod program;
+pub mod program_runner;
 pub mod schedule;
 pub mod schedule_runner;
+pub mod wait_for;
 
-pub use section::{Section, LogSection};
+pub use section::{Section, SectionRef, LogSection};
 pub use section_runner::SectionRunner;
 pub use program::Program;
+pub use program_runner::ProgramRunner;
+pub use schedule::{DateTimeBound, Schedule, every_day};
 
 use std::time::Duration;
 use std::env;
@@ -41,7 +46,10 @@ fn init_log() {
             LogLevel::Warn => "[WARN]".yellow(),
             LogLevel::Error => "[ERROR]".red(),
         };
-        format!("{:7} {:20} - {}", level_str, rec.location().module_path(), rec.args())
+        format!("{:7} {:20} - {}",
+                level_str,
+                rec.location().module_path(),
+                rec.args())
     });
     log_builder.init().unwrap();
 }
@@ -49,28 +57,36 @@ fn init_log() {
 fn main() {
     init_log();
 
-    let mut sections: Vec<Arc<Section>>;
+    let mut sections: Vec<SectionRef>;
     let section_runner = SectionRunner::start_new();
+    let program_runner = ProgramRunner::start_new(section_runner.clone());
 
     info!("initializing sections");
     sections = (0..6)
         .map(|i| format!("Section {}", i + 1))
-        .map(|name| Arc::new(LogSection::new_noop(name)) as Arc<Section>)
+        .map(|name| Arc::new(LogSection::new_noop(name)) as SectionRef)
         .collect();
 
     for section in sections.iter_mut() {
         section.set_state(false);
     }
 
+    use chrono::NaiveTime;
+    let schedule = Schedule::new(vec![NaiveTime::from_hms(14, 51, 0)],
+                                 every_day(),
+                                 DateTimeBound::None,
+                                 DateTimeBound::None);
     let program = Program::new("Test Program",
-                               [(sections[0].clone(), Duration::from_secs(2))]
-                                   .iter()
-                                   .cloned());
+                               vec![(sections[0].clone(), Duration::from_secs(2))],
+                               schedule);
+    let program = Arc::new(program);
 
-    program.run(&section_runner);
+    program_runner.add_program(program.clone());
+    program.run_sync(&section_runner);
 
     Trap::trap(&[2, 15]).next(); // SIGINT, SIGKILL
 
     info!("received interrupt. stopping...");
+    program_runner.stop();
     section_runner.stop();
 }
