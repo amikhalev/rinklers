@@ -3,7 +3,7 @@
 use std::cmp::{PartialOrd, Ordering};
 use std::time::Duration;
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
-use std::sync::{Condvar, Mutex, MutexGuard, PoisonError};
+use std::sync::{Condvar, Mutex, MutexGuard, LockResult, PoisonError};
 
 /// Represents a time to wait for when waiting for an event to occur.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -12,7 +12,7 @@ pub enum WaitPeriod {
     Wait,
     /// Wait at most for the specified duration (wait for a timeout)
     AtMost(Duration),
-    /// Don't wait at all and return None immediately
+    /// Don't wait at all and return immediately
     None,
 }
 
@@ -56,53 +56,22 @@ pub fn wait_receiver<T>(receiver: &Receiver<T>, period: &WaitPeriod) -> Option<T
     }
 }
 
-use std::fmt;
-use std::convert::From;
-
-/// An error than can be returned from `wait_condvar`
-pub enum WaitCondvarError<T> {
-    /// The mutex that was waited on was poisoned
-    Poisoned(PoisonError<T>),
-    /// A `WaitPeriod` of `None` was specified
-    NoneWait,
-}
-
-impl<T> From<PoisonError<T>> for WaitCondvarError<T> {
-    fn from(err: PoisonError<T>) -> Self {
-        WaitCondvarError::Poisoned(err)
-    }
-}
-
-impl<T> fmt::Debug for WaitCondvarError<T> {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match *self {
-            WaitCondvarError::Poisoned(_) => "Poisoned(..)".fmt(f),
-            WaitCondvarError::NoneWait => "NoneWait".fmt(f),
-        }
-    }
-}
-
 /// Waits on `condvar` for `period`, returning a `MutexGuard` for `mutex` if successful
 pub fn wait_condvar<'a, T>(condvar: &Condvar,
                            mutex: &'a Mutex<T>,
                            period: &WaitPeriod)
-                           -> Result<MutexGuard<'a, T>, WaitCondvarError<MutexGuard<'a, T>>> {
+                           -> LockResult<MutexGuard<'a, T>> {
     use self::WaitPeriod::*;
+    let lock = mutex.lock();
     match *period {
-        Wait => {
-            mutex.lock()
-                .and_then(|guard| condvar.wait(guard))
-                .map_err(|err| WaitCondvarError::Poisoned(err))
-        }
+        Wait => lock.and_then(|guard| condvar.wait(guard)),
         AtMost(ref dur) => {
-            mutex.lock()
-                .and_then(|guard| {
-                    condvar.wait_timeout(guard, dur.clone())
-                        .map(|res| res.0)
-                        .map_err(|err| PoisonError::new(err.into_inner().0))
-                })
-                .map_err(|err| WaitCondvarError::Poisoned(err))
+            lock.and_then(|guard| {
+                condvar.wait_timeout(guard, dur.clone())
+                    .map(|res| res.0)
+                    .map_err(|err| PoisonError::new(err.into_inner().0))
+            })
         }
-        None => Err(WaitCondvarError::NoneWait),
+        None => lock,
     }
 }

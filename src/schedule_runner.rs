@@ -172,11 +172,13 @@ impl<E> ScheduleRunner<E>
         let mut wait_period = WaitPeriod::Wait;
         loop {
             let mut data_lock = wait_condvar(&condvar, &data, &wait_period).unwrap();
+
             // trace!("ScheduleRunner state {:?}", *data_lock);
             if data_lock.quit {
                 debug!("quitting ScheduleRunner");
                 return;
             }
+
             wait_period = WaitPeriod::Wait;
             for run in &mut data_lock.runs {
                 if let Some(left) = run.till_run() {
@@ -185,10 +187,12 @@ impl<E> ScheduleRunner<E>
                         // event to run
                         executor.execute(&run.data);
                         run.update_next_run();
+                        wait_period = WaitPeriod::None;
+                    } else {
+                        // sleep until it is time to run
+                        let left = left.to_std().unwrap();
+                        wait_period = cmp::min(wait_period, WaitPeriod::AtMost(left));
                     }
-                    // sleep until it is time to run
-                    let left = left.to_std().unwrap();
-                    wait_period = cmp::min(wait_period, WaitPeriod::AtMost(left));
                 }
             }
             // only keep runs that will occur at some point in the future
