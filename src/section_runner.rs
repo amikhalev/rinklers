@@ -6,41 +6,7 @@ use std::thread::{self, JoinHandle};
 use std::collections::VecDeque;
 use std::fmt;
 use section::SectionRef;
-
-/// Gets a human-readable string representation of a `Duration`
-fn duration_str(dur: &Duration) -> String {
-    let mut secs = dur.as_secs();
-    let mut minutes = secs / 60;
-    secs %= 60;
-    let hours = minutes / 60;
-    minutes %= 60;
-    let mut nanos = dur.subsec_nanos();
-    let mut micros = nanos / 1000;
-    nanos %= 1000;
-    let millis = micros / 1000;
-    micros %= 1000;
-
-    let mut s = String::new();
-    if hours > 0 {
-        s.push_str(&(hours.to_string() + "h"))
-    }
-    if minutes > 0 {
-        s.push_str(&(minutes.to_string() + "m"))
-    }
-    if secs > 0 {
-        s.push_str(&(secs.to_string() + "s"))
-    }
-    if millis > 0 {
-        s.push_str(&(millis.to_string() + "ms"))
-    }
-    if micros > 0 {
-        s.push_str(&(micros.to_string() + "us"))
-    }
-    if nanos > 0 {
-        s.push_str(&(nanos.to_string() + "ns"))
-    }
-    s
-}
+use util::duration_string;
 
 /// An operation that can be sent to a SectionRunner
 #[derive(Debug)]
@@ -76,7 +42,7 @@ impl fmt::Debug for SecRun {
         write!(f,
                "SecRun {{ sec: {:?}, dur: {} }}",
                self.sec,
-               duration_str(&self.dur))
+               duration_string(&self.dur))
     }
 }
 
@@ -139,7 +105,7 @@ impl SectionRunner {
     /// Runs the thread which does all of the magic
     fn run(rx: Receiver<Op>) {
         use self::Op::*;
-        use wait_for::{WaitPeriod, wait_receiver};
+        use util::{WaitPeriod, wait_receiver};
         struct Run {
             sec: SectionRef,
             dur: Duration,
@@ -158,7 +124,7 @@ impl SectionRunner {
                         if let Some(run) = current_run {
                             debug!("interrupting section {:?}, ran for {}",
                                    run.sec,
-                                   duration_str(&run.start_time.elapsed()));
+                                   duration_string(&run.start_time.elapsed()));
                             run.sec.set_state(false);
                             // if the receiver is closed, it's ok
                             let _ = run.notify.send(RunNotification::Interrupted);
@@ -177,7 +143,7 @@ impl SectionRunner {
                     if elapsed >= run.dur {
                         trace!("finished running section {:?}, ran for {}",
                                run.sec,
-                               duration_str(&elapsed));
+                               duration_string(&elapsed));
                         run.sec.set_state(false);
                         // if the receiver is closed, it's ok
                         let _ = run.notify.send(RunNotification::Finish);
@@ -190,9 +156,9 @@ impl SectionRunner {
                     }
                 } else {
                     if let Some(run) = queue.pop_front() {
-                        trace!("starting running section {:?} for {}",
+                        debug!("running section {:?} for {}",
                                run.sec,
-                               duration_str(&run.dur));
+                               duration_string(&run.dur));
                         run.sec.set_state(true);
                         // if the receiver is closed, it's ok
                         let _ = run.notification_sender.send(RunNotification::Start);

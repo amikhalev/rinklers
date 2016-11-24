@@ -1,10 +1,12 @@
 //! ScheduleRunner for executing events based on Schedules
 
 use std::thread::{self, JoinHandle};
+use std::sync::{Mutex, Condvar};
 use std::fmt;
 use std::cmp;
 use chrono::{DateTime, Local, Duration as CDuration};
 use schedule::Schedule;
+use util::{LockCondvarGuard, CondvarGuard, chrono_duration_string};
 
 /// Executes events triggered by a [ScheduleRunner](struct.ScheduleRunner.html)
 pub trait Executor: Send {
@@ -14,6 +16,12 @@ pub trait Executor: Send {
 
     /// Executed when an event is triggered
     fn execute(&self, data: &Self::Data);
+
+    /// Gets the string representation of a `Self::Data` for `Executor`
+    fn data_string(data: &Self::Data) -> String {
+        let _ = data; // to avoid warning
+        "..".to_string()
+    }
 }
 
 /// An [Executor](trait.Executor.html) that doesn't do anything
@@ -36,7 +44,6 @@ impl Executor for FnExecutor {
     }
 }
 
-use std::sync::{Mutex, Condvar};
 use std::marker::PhantomData;
 
 struct SchedRun<E: Executor> {
@@ -47,12 +54,13 @@ struct SchedRun<E: Executor> {
 
 impl<E: Executor> SchedRun<E> {
     fn new(sched: Schedule, data: E::Data) -> Self {
-        let next_run = sched.next_run();
-        SchedRun {
+        let mut run = SchedRun {
             sched: sched,
             data: data,
-            next_run: next_run,
-        }
+            next_run: None,
+        };
+        run.update_next_run();
+        run
     }
 
     fn till_run(&self) -> Option<CDuration> {
@@ -61,6 +69,11 @@ impl<E: Executor> SchedRun<E> {
 
     fn update_next_run(&mut self) -> Option<DateTime<Local>> {
         self.next_run = self.sched.next_run();
+        if let Some(till_run) = self.till_run() {
+            trace!("next run for item \"{}\" will be in {:?}",
+                   E::data_string(&self.data),
+                   chrono_duration_string(&till_run));
+        }
         self.next_run
     }
 }
@@ -68,8 +81,9 @@ impl<E: Executor> SchedRun<E> {
 impl<E: Executor> fmt::Debug for SchedRun<E> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f,
-               "SchedRun {{ sched: {:?}, data: .., next_run: {:?} }}",
+               "SchedRun {{ sched: {:?}, data: {}, next_run: {:?} }}",
                self.sched,
+               E::data_string(&self.data),
                self.next_run)
     }
 }
@@ -106,13 +120,14 @@ impl<E: Executor> RunnerState<E> {
         }
     }
 
-    fn update<F>(&self, f: F)
-        where F: FnOnce(&mut RunnerData<E>)
-    {
-        {
-            let mut lock = self.data.lock().unwrap();
-            f(&mut *lock);
-        }
+    /// Begins an update to the `RunnerState`. When the `CondvarGuard` is dropped, it will notify
+    /// the runner thread of the update.
+    fn update<'a>(&'a self) -> CondvarGuard<'a, RunnerData<E>> {
+        self.data.lock_condvar(&self.condvar)
+    }
+
+    /// Notifies the runner thread of an update
+    fn notify_update(&self) {
         self.condvar.notify_one();
     }
 }
@@ -150,27 +165,25 @@ impl<E> ScheduleRunner<E>
         runner
     }
 
-    /// Adds the specified `schedule`, running the executor with the specified `data` whenever the
-    /// schedule triggers it.
+    /// Schedules an event to be run using the `Executor` whenever the schedule triggers it.
     pub fn schedule(&self, schedule: Schedule, sched_data: E::Data) {
-        self.state.update(move |data| {
-            data.runs.push(SchedRun::new(schedule, sched_data));
-        });
+        let mut data = self.state.update();
+        data.runs.push(SchedRun::new(schedule, sched_data));
     }
 
     /// Stops the `ScheduleRunner`, waiting for the thread to exit
     pub fn stop(self) {
-        self.state.update(|data| {
-            data.quit = true;
-        });
+        let mut data = self.state.update();
+        data.quit = true;
     }
 
     fn run(state: &RunnerState<E>, executor: E) {
         let data = &state.data;
         let condvar = &state.condvar;
-        use wait_for::{WaitPeriod, wait_condvar};
+        use util::{WaitPeriod, wait_condvar};
         let mut wait_period = WaitPeriod::Wait;
         loop {
+            trace!("sleeping for {:?}", wait_period);
             let mut data_lock = wait_condvar(&condvar, &data, &wait_period).unwrap();
 
             // trace!("ScheduleRunner state {:?}", *data_lock);
@@ -185,6 +198,7 @@ impl<E> ScheduleRunner<E>
                     if left <= CDuration::zero() {
                         // if the time left is less than or equal to zero, it is time for the
                         // event to run
+                        trace!("running scheduled item \"{}\"", E::data_string(&run.data));
                         executor.execute(&run.data);
                         run.update_next_run();
                         wait_period = WaitPeriod::None;

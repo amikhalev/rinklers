@@ -95,7 +95,7 @@ impl<S: Section> Section for LogSection<S> {
 
     #[inline]
     fn set_state(&self, state: bool) {
-        debug!("setting section {} state to {}", self.name(), state);
+        trace!("setting section {} state to {}", self.name(), state);
         self.section.set_state(state);
     }
 

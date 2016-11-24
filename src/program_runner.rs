@@ -21,6 +21,10 @@ impl Executor for ProgramExecutor {
         debug!("running program {} at scheduled time", data.name);
         data.queue_run(&self.section_runner);
     }
+
+    fn data_string(data: &Self::Data) -> String {
+        format!("Program {{ name: {} }}", data.name)
+    }
 }
 
 /// Runs programs based on their schedules

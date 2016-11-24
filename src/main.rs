@@ -16,7 +16,7 @@ pub mod program;
 pub mod program_runner;
 pub mod schedule;
 pub mod schedule_runner;
-pub mod wait_for;
+pub mod util;
 
 pub use section::{Section, SectionRef, LogSection};
 pub use section_runner::SectionRunner;
@@ -71,7 +71,7 @@ fn main() {
     }
 
     use chrono::NaiveTime;
-    let schedule = Schedule::new(vec![NaiveTime::from_hms(14, 51, 0)],
+    let schedule = Schedule::new(vec![NaiveTime::from_hms(19, 06, 20)],
                                  every_day(),
                                  DateTimeBound::None,
                                  DateTimeBound::None);
@@ -81,7 +81,7 @@ fn main() {
     let program = Arc::new(program);
 
     program_runner.add_program(program.clone());
-    program.run_sync(&section_runner);
+    // program.run_sync(&section_runner);
 
     Trap::trap(&[2, 15]).next(); // SIGINT, SIGKILL
 
