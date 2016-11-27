@@ -80,27 +80,400 @@ impl<E: Executor> SchedRun<E> {
 
 impl<E: Executor> fmt::Debug for SchedRun<E> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f,
-               "SchedRun {{ sched: {:?}, data: {}, next_run: {:?} }}",
-               self.sched,
-               E::data_string(&self.data),
-               self.next_run)
+        f.debug_struct("SchedRun")
+            .field("sched", &self.sched)
+            .field("data", &E::data_string(&self.data))
+            .field("next_run", &self.next_run)
+            .finish()
     }
 }
+
+mod index_map {
+    use std::mem;
+    use std::ops::{Index, IndexMut};
+    use std::iter::{Iterator, IntoIterator, FromIterator};
+    use std::fmt;
+
+    #[derive(Clone, PartialEq, PartialOrd, Eq, Ord)]
+    enum Entry<E> {
+        Element(E),
+        Empty(Option<usize>),
+    }
+
+    #[derive(Clone, PartialEq, PartialOrd, Eq, Ord)]
+    pub struct IndexMap<E> {
+        entries: Vec<Entry<E>>,
+        next_empty: Option<usize>,
+    }
+
+    impl<E> IndexMap<E> {
+        pub fn new() -> Self {
+            Self::default()
+        }
+
+        pub fn with_capacity(capacity: usize) -> Self {
+            IndexMap { entries: Vec::with_capacity(capacity), ..Self::new() }
+        }
+
+        pub fn capacity(&self) -> usize {
+            self.entries.capacity()
+        }
+
+        pub fn reserve(&mut self, additional: usize) {
+            self.entries.reserve(additional);
+        }
+
+        pub fn insert(&mut self, element: E) -> usize {
+            let new_entry = Entry::Element(element);
+            match self.next_empty.take() {
+                None => {
+                    let index = self.entries.len();
+                    self.entries.push(new_entry);
+                    index
+                }
+                Some(index) => {
+                    let empty = mem::replace(&mut self.entries[index], new_entry);
+                    let empty = match empty {
+                        Entry::Empty(e) => e,
+                        Entry::Element(_) => {
+                            panic!("IndexMap next_empty not pointing to Entry::Empty")
+                        }
+                    };
+                    self.next_empty = empty;
+                    index
+                }
+            }
+        }
+
+        fn remove_entry(next_empty: &mut Option<usize>,
+                        idx: usize,
+                        entry: &mut Entry<E>)
+                        -> Option<E> {
+            match *entry {
+                Entry::Element(_) => {
+                    let element = mem::replace(entry, Entry::Empty(next_empty.take()));
+                    *next_empty = Some(idx);
+                    match element {
+                        Entry::Element(elem) => Some(elem),
+                        _ => unreachable!(),
+                    }
+                }
+                Entry::Empty(_) => None,
+            }
+        }
+
+        pub fn remove(&mut self, idx: usize) -> Option<E> {
+            let ref mut entry = self.entries[idx];
+            Self::remove_entry(&mut self.next_empty, idx, entry)
+        }
+
+        pub fn retain<F>(&mut self, mut f: F)
+            where F: FnMut(&E) -> bool
+        {
+            for (idx, entry) in self.entries.iter_mut().enumerate() {
+                let retain = if let Entry::Element(ref elem) = *entry {
+                    f(elem)
+                } else {
+                    true
+                };
+                if !retain {
+                    Self::remove_entry(&mut self.next_empty, idx, entry);
+                }
+            }
+        }
+
+        pub fn indeces(&self) -> Indeces<E> {
+            Indeces::new(self)
+        }
+
+        pub fn values(&self) -> Values<E> {
+            Values::new(self)
+        }
+
+        pub fn values_mut(&mut self) -> ValuesMut<E> {
+            ValuesMut::new(self)
+        }
+
+        pub fn iter(&self) -> Iter<E> {
+            Iter::new(self)
+        }
+
+        pub fn iter_mut(&mut self) -> IterMut<E> {
+            IterMut::new(self)
+        }
+    }
+
+    impl<E> Default for IndexMap<E> {
+        fn default() -> Self {
+            IndexMap {
+                entries: Vec::default(),
+                next_empty: None,
+            }
+        }
+    }
+
+    impl<E> Index<usize> for IndexMap<E> {
+        type Output = E;
+        fn index(&self, index: usize) -> &Self::Output {
+            match self.entries[index] {
+                Entry::Element(ref elem) => elem,
+                Entry::Empty(_) => panic!("empty entry in IndexMap at index {}", index),
+            }
+        }
+    }
+
+    impl<E> IndexMut<usize> for IndexMap<E> {
+        fn index_mut(&mut self, index: usize) -> &mut Self::Output {
+            match self.entries[index] {
+                Entry::Element(ref mut elem) => elem,
+                Entry::Empty(_) => panic!("empty entry in IndexMap at index {}", index),
+            }
+        }
+    }
+
+    impl<'a, E> IntoIterator for &'a IndexMap<E> {
+        type Item = (usize, &'a E);
+        type IntoIter = Iter<'a, E>;
+
+        fn into_iter(self) -> Iter<'a, E> {
+            self.iter()
+        }
+    }
+
+    impl<'a, E> IntoIterator for &'a mut IndexMap<E> {
+        type Item = (usize, &'a mut E);
+        type IntoIter = IterMut<'a, E>;
+
+        fn into_iter(mut self) -> IterMut<'a, E> {
+            self.iter_mut()
+        }
+    }
+
+    impl<E> fmt::Debug for IndexMap<E>
+        where E: fmt::Debug
+    {
+        fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+            f.debug_list()
+                .entries(self)
+                .finish()
+        }
+    }
+
+    impl<E> FromIterator<E> for IndexMap<E> {
+        fn from_iter<T>(iter: T) -> Self
+            where T: IntoIterator<Item = E>
+        {
+            let iter = iter.into_iter();
+            let mut map = IndexMap::with_capacity(iter.size_hint().0);
+            for item in iter {
+                map.insert(item);
+            }
+            map
+        }
+    }
+
+    pub struct Iter<'a, E>
+        where E: 'a
+    {
+        index_map: &'a IndexMap<E>,
+        index: usize,
+    }
+
+    impl<'a, E> Iter<'a, E> {
+        fn new(index_map: &'a IndexMap<E>) -> Self {
+            Iter {
+                index_map: index_map,
+                index: 0,
+            }
+        }
+    }
+
+    impl<'a, E> Iterator for Iter<'a, E> {
+        type Item = (usize, &'a E);
+
+        fn next(&mut self) -> Option<Self::Item> {
+            while self.index < self.index_map.entries.len() {
+                let ref entry = self.index_map.entries[self.index];
+                self.index += 1;
+                match *entry {
+                    Entry::Empty(_) => continue,
+                    Entry::Element(ref e) => return Some((self.index, e)),
+                };
+            }
+            None
+        }
+
+        fn size_hint(&self) -> (usize, Option<usize>) {
+            (0, Some(self.index_map.entries.len())) // because every entry could be Empty
+        }
+    }
+
+    pub struct IterMut<'a, E>
+        where E: 'a
+    {
+        index_map: &'a mut IndexMap<E>,
+        index: usize,
+    }
+
+    impl<'a, E> IterMut<'a, E> {
+        fn new(index_map: &'a mut IndexMap<E>) -> Self {
+            IterMut {
+                index_map: index_map,
+                index: 0,
+            }
+        }
+    }
+
+    impl<'a, E> Iterator for IterMut<'a, E> {
+        type Item = (usize, &'a mut E);
+
+        fn next(&mut self) -> Option<Self::Item> {
+            while self.index < self.index_map.entries.len() {
+                // unsafe to avoid possible borrow checker issue with scoping?
+                let mut entry: &mut Entry<E> =
+                    unsafe { mem::transmute(self.index_map.entries.index_mut(self.index)) };
+                self.index += 1;
+                match *entry {
+                    Entry::Empty(_) => continue,
+                    Entry::Element(ref mut e) => return Some((self.index, e)),
+                };
+            }
+            None
+        }
+
+        fn size_hint(&self) -> (usize, Option<usize>) {
+            (0, Some(self.index_map.entries.len())) // because every entry could be Empty
+        }
+    }
+
+    pub struct Indeces<'a, E>
+        where E: 'a
+    {
+        inner: Iter<'a, E>,
+    }
+
+    impl<'a, E> Indeces<'a, E> {
+        fn new(index_map: &'a IndexMap<E>) -> Self {
+            Indeces { inner: Iter::new(index_map) }
+        }
+    }
+
+    impl<'a, E> Iterator for Indeces<'a, E> {
+        type Item = usize;
+
+        #[inline]
+        fn next(&mut self) -> Option<Self::Item> {
+            self.inner.next().map(|(i, _)| i)
+        }
+        #[inline]
+        fn size_hint(&self) -> (usize, Option<usize>) {
+            self.inner.size_hint()
+        }
+    }
+
+    pub struct Values<'a, E>
+        where E: 'a
+    {
+        inner: Iter<'a, E>,
+    }
+
+    impl<'a, E> Values<'a, E> {
+        fn new(index_map: &'a IndexMap<E>) -> Self {
+            Values { inner: Iter::new(index_map) }
+        }
+    }
+
+    impl<'a, E> Iterator for Values<'a, E> {
+        type Item = &'a E;
+
+        #[inline]
+        fn next(&mut self) -> Option<Self::Item> {
+            self.inner.next().map(|(_, e)| e)
+        }
+        #[inline]
+        fn size_hint(&self) -> (usize, Option<usize>) {
+            self.inner.size_hint()
+        }
+    }
+
+    pub struct ValuesMut<'a, E>
+        where E: 'a
+    {
+        inner: IterMut<'a, E>,
+    }
+
+    impl<'a, E> ValuesMut<'a, E> {
+        fn new(index_map: &'a mut IndexMap<E>) -> Self {
+            ValuesMut { inner: IterMut::new(index_map) }
+        }
+    }
+
+    impl<'a, E> Iterator for ValuesMut<'a, E> {
+        type Item = &'a mut E;
+
+        #[inline]
+        fn next(&mut self) -> Option<Self::Item> {
+            self.inner.next().map(|(_, e)| e)
+        }
+        #[inline]
+        fn size_hint(&self) -> (usize, Option<usize>) {
+            self.inner.size_hint()
+        }
+    }
+
+    #[cfg(test)]
+    mod test {
+        use super::*;
+        use std::iter::FromIterator;
+
+        #[test]
+        fn test_index_map() {
+            let mut map: IndexMap<i32> = IndexMap::new();
+
+            assert_eq!(map.insert(100), 0);
+            assert_eq!(map.insert(200), 1);
+            assert_eq!(map.insert(300), 2);
+            assert_eq!(map.insert(400), 3);
+
+            assert_eq!(map.remove(0), Some(100));
+            assert_eq!(map.next_empty, Some(0), "map.next_empty");
+
+            assert_eq!(map.indeces().collect::<Vec<_>>(), vec![1, 2, 3]);
+            assert_eq!(map.values().cloned().collect::<Vec<_>>(),
+                       vec![200, 300, 400]);
+
+            assert_eq!(map.insert(500), 0);
+
+            assert_eq!(map.indeces().collect::<Vec<_>>(), vec![0, 1, 2, 3]);
+            assert_eq!(map.values().cloned().collect::<Vec<_>>(),
+                       vec![500, 200, 300, 400]);
+
+            let mut map2 = map.clone();
+            for item in map2.values_mut() {
+                *item += 10;
+            }
+            let map3 = IndexMap::from_iter(vec![510, 210, 310, 410]);
+            assert_eq!(map3.capacity(), 4);
+            assert_eq!(map2, map3);
+        }
+    }
+}
+
+use self::index_map::IndexMap;
 
 #[derive(Debug)]
 struct RunnerData<E>
     where E: Executor
 {
     quit: bool,
-    runs: Vec<SchedRun<E>>,
+    runs: IndexMap<SchedRun<E>>,
 }
 
 impl<E: Executor> RunnerData<E> {
     fn new() -> Self {
         RunnerData {
             quit: false,
-            runs: Vec::new(),
+            runs: IndexMap::new(),
         }
     }
 }
@@ -168,7 +541,7 @@ impl<E> ScheduleRunner<E>
     /// Schedules an event to be run using the `Executor` whenever the schedule triggers it.
     pub fn schedule(&self, schedule: Schedule, sched_data: E::Data) {
         let mut data = self.state.update();
-        data.runs.push(SchedRun::new(schedule, sched_data));
+        data.runs.insert(SchedRun::new(schedule, sched_data));
     }
 
     /// Stops the `ScheduleRunner`, waiting for the thread to exit
@@ -193,7 +566,7 @@ impl<E> ScheduleRunner<E>
             }
 
             wait_period = WaitPeriod::Wait;
-            for run in &mut data_lock.runs {
+            for (_, run) in &mut data_lock.runs {
                 if let Some(left) = run.till_run() {
                     if left <= CDuration::zero() {
                         // if the time left is less than or equal to zero, it is time for the
