@@ -293,11 +293,11 @@ mod index_map {
 
         fn next(&mut self) -> Option<Self::Item> {
             while self.index < self.index_map.entries.len() {
-                let ref entry = self.index_map.entries[self.index];
+                let index = self.index;
                 self.index += 1;
-                match *entry {
+                match self.index_map.entries[index] {
                     Entry::Empty(_) => continue,
-                    Entry::Element(ref e) => return Some((self.index, e)),
+                    Entry::Element(ref e) => return Some((index, e)),
                 };
             }
             None
@@ -329,13 +329,14 @@ mod index_map {
 
         fn next(&mut self) -> Option<Self::Item> {
             while self.index < self.index_map.entries.len() {
+                let index = self.index;
+                self.index += 1;
                 // unsafe to avoid possible borrow checker issue with scoping?
                 let mut entry: &mut Entry<E> =
-                    unsafe { mem::transmute(self.index_map.entries.index_mut(self.index)) };
-                self.index += 1;
+                    unsafe { mem::transmute(self.index_map.entries.index_mut(index)) };
                 match *entry {
                     Entry::Empty(_) => continue,
-                    Entry::Element(ref mut e) => return Some((self.index, e)),
+                    Entry::Element(ref mut e) => return Some((index, e)),
                 };
             }
             None
@@ -434,6 +435,7 @@ mod index_map {
             assert_eq!(map.insert(200), 1);
             assert_eq!(map.insert(300), 2);
             assert_eq!(map.insert(400), 3);
+            assert_eq!(map.indeces().collect::<Vec<_>>(), vec![0, 1, 2, 3]);
 
             assert_eq!(map.remove(0), Some(100));
             assert_eq!(map.next_empty, Some(0), "map.next_empty");
