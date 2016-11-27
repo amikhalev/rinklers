@@ -2,8 +2,7 @@
 
 use std::thread::{self, JoinHandle};
 use std::sync::{Mutex, Condvar};
-use std::fmt;
-use std::cmp;
+use std::{cmp, fmt, mem};
 use chrono::{DateTime, Local, Duration as CDuration};
 use schedule::Schedule;
 use util::{LockCondvarGuard, CondvarGuard, chrono_duration_string};
@@ -507,6 +506,29 @@ impl<E: Executor> RunnerState<E> {
     }
 }
 
+pub struct ScheduleGuard<'a, E>
+    where E: Executor + 'static
+{
+    runner: &'a ScheduleRunner<E>,
+    index: usize,
+}
+
+impl<'a, E> ScheduleGuard<'a, E>
+    where E: Executor
+{
+    pub fn stop(self) {
+        self.runner.remove(self.index);
+    }
+
+    pub fn update_schedule(&self, new_schedule: Schedule) {
+        self.runner.update_schedule(self.index, new_schedule);
+    }
+
+    pub fn update_data(&self, data: E::Data) {
+        self.runner.update_data(self.index, data);
+    }
+}
+
 /// Keeps track of [Schedule](struct.Schedule.html)s and executes events when they are triggered by
 /// the schedules
 pub struct ScheduleRunner<E>
@@ -541,9 +563,30 @@ impl<E> ScheduleRunner<E>
     }
 
     /// Schedules an event to be run using the `Executor` whenever the schedule triggers it.
-    pub fn schedule(&self, schedule: Schedule, sched_data: E::Data) {
+    pub fn schedule<'a>(&'a self, schedule: Schedule, sched_data: E::Data) -> ScheduleGuard<'a, E> {
         let mut data = self.state.update();
-        data.runs.insert(SchedRun::new(schedule, sched_data));
+        let idx = data.runs.insert(SchedRun::new(schedule, sched_data));
+        ScheduleGuard {
+            runner: self,
+            index: idx,
+        }
+    }
+
+    fn remove(&self, index: usize) -> Option<SchedRun<E>> {
+        let mut data = self.state.update();
+        data.runs.remove(index)
+    }
+
+    fn update_schedule(&self, index: usize, new_schedule: Schedule) -> Schedule {
+        let mut data = self.state.update();
+        let ref mut run = data.runs[index];
+        mem::replace(&mut run.sched, new_schedule)
+    }
+
+    fn update_data(&self, index: usize, new_data: E::Data) -> E::Data {
+        let mut data = self.state.update();
+        let ref mut run = data.runs[index];
+        mem::replace(&mut run.data, new_data)
     }
 
     /// Stops the `ScheduleRunner`, waiting for the thread to exit
@@ -614,29 +657,34 @@ mod test {
 
         let delay_time = CDuration::milliseconds(25);
         let now = Local::now();
-        let run_time = now.time() + delay_time;
         let today = now.weekday();
-        let schedule = Schedule::new(vec![run_time],
+        let schedule = Schedule::new(vec![now.time() + delay_time,
+                                          now.time() + delay_time + delay_time],
                                      vec![today],
                                      DateTimeBound::None,
                                      DateTimeBound::None);
 
-        let mut rxs: Vec<Receiver<()>> = Vec::new();
-        for _ in 0..10 {
-            let (tx, rx) = channel::<()>();
-            schedule_runner.schedule(schedule.clone(),
-                                     Box::new(move || {
-                                         tx.send(()).unwrap();
-                                     }));
-            rxs.push(rx);
-        }
-        for rx in &rxs {
-            rx.recv_timeout(Duration::from_millis(50)).ok().expect("schedule did not run in time");
-        }
-        for rx in &rxs {
-            rx.recv_timeout(Duration::from_millis(50))
-                .err()
-                .expect("schedule ran again when it should not have");
+        {
+            let mut guards: Vec<_> = Vec::new();
+            for _ in 0..10 {
+                let (tx, rx) = channel::<()>();
+                let guard = schedule_runner.schedule(Schedule::default(), Box::new(|| { }));
+                guard.update_data(Box::new(move || {
+                    tx.send(()).unwrap();
+                }));
+                guard.update_schedule(schedule.clone());
+                guards.push((rx, guard));
+            }
+            let rxs: Vec<_> = guards.into_iter().map(|(rx, guard)| {
+                rx.recv_timeout(Duration::from_millis(50)).ok().expect("schedule did not run in time");
+                guard.stop();
+                rx
+            }).collect();
+            for rx in rxs.iter() {
+                rx.recv_timeout(Duration::from_millis(50))
+                    .err()
+                    .expect("schedule ran again when it should not have");
+            }
         }
 
         schedule_runner.stop();
