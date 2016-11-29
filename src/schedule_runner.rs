@@ -501,6 +501,7 @@ impl<E: Executor> RunnerState<E> {
     }
 
     /// Notifies the runner thread of an update
+    #[allow(dead_code)]
     fn notify_update(&self) {
         self.condvar.notify_one();
     }

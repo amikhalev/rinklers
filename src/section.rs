@@ -82,8 +82,8 @@ impl<S: Section> LogSection<S> {
 impl LogSection<NoopSection> {
     /// Creates a new `LogSection` wrapping a `NoopSection`, essentially a section only logging and
     /// storing state.
-    pub fn new_noop(name: String) -> Self {
-        Self::new(NoopSection::new(name))
+    pub fn new_noop<S: Into<String>>(name: S) -> Self {
+        Self::new(NoopSection::new(name.into()))
     }
 }
 

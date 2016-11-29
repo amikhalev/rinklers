@@ -1,14 +1,19 @@
+#![feature(proc_macro)]
 #![warn(missing_docs)]
 
 //! A program for managing a sprinkler system
 
 #[macro_use]
 extern crate log;
+#[macro_use]
+extern crate serde_derive;
+
 extern crate env_logger;
 extern crate signal;
 extern crate chrono;
 extern crate num;
 extern crate colored;
+extern crate serde_json;
 
 pub mod section;
 pub mod section_runner;
@@ -28,6 +33,23 @@ use std::time::Duration;
 use std::env;
 use std::sync::Arc;
 use signal::trap::Trap;
+
+#[derive(Serialize, Deserialize, Debug)]
+struct SectionConfig {
+    name: String,
+}
+
+impl SectionConfig {
+    fn to_section(&self) -> Arc<Section> {
+        // TODO: Check some environment variable and change the type of section created
+        Arc::new(LogSection::new_noop(&self.name as &str)) as SectionRef
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+struct Config {
+    sections: Vec<SectionConfig>,
+}
 
 fn init_log() {
     use log::{LogLevelFilter, LogLevel};
@@ -56,17 +78,21 @@ fn init_log() {
 fn main() {
     init_log();
 
-    let mut sections: Vec<SectionRef>;
+    use std::fs::File;
+    let file = File::open("config.json").expect("error opening config file");
+    let config: Config = serde_json::from_reader(file).expect("error parsing config file");
+    debug!("config: {:?}", config);
+
+    let sections: Vec<SectionRef>;
     let section_runner = SectionRunner::start_new();
     let program_runner = ProgramRunner::start_new(section_runner.clone());
 
     info!("initializing sections");
-    sections = (0..6)
-        .map(|i| format!("Section {}", i + 1))
-        .map(|name| Arc::new(LogSection::new_noop(name)) as SectionRef)
+    sections = config.sections.iter()
+        .map(|sec_conf| sec_conf.to_section())
         .collect();
 
-    for section in sections.iter_mut() {
+    for section in sections.iter() {
         section.set_state(false);
     }
 
