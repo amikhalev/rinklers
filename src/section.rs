@@ -106,6 +106,7 @@ impl<S: Section> Section for LogSection<S> {
 }
 
 #[cfg(test)]
+#[allow(dead_code)]
 mod test {
     use super::*;
 
