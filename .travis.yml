@@ -2,8 +2,9 @@ language: rust
 cache: cargo
 sudo: false
 rust:
-    - stable
-    - beta
+    # - stable
+    # - beta
+    # serde_derive only works on nightly currently
     - nightly
 matrix:
     allow_failures:
