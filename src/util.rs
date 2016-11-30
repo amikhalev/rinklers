@@ -209,19 +209,18 @@ mod test {
     #[test]
     fn test_chrono_duration_string() {
         use ::chrono::Duration;
-        let cases: Vec<(Duration, &str)> = vec![
-            (Duration::seconds(1), "1s"),
-            (Duration::seconds(150), "2m30s"),
-            (Duration::weeks(1), "1w"),
-            (Duration::days(1), "1d"),
-            (Duration::hours(1), "1h"),
-            (Duration::minutes(1), "1m"),
-            (Duration::milliseconds(1), "1ms"),
-            (Duration::microseconds(1), "1us"),
-            (Duration::nanoseconds(1), "1ns"),
-            (Duration::seconds(31449599) + Duration::nanoseconds(999999999),
-            "51w6d23h59m59s999ms999us999ns"),
-        ];
+        let cases: Vec<(Duration, &str)> = vec![(Duration::seconds(1), "1s"),
+                                                (Duration::seconds(150), "2m30s"),
+                                                (Duration::weeks(1), "1w"),
+                                                (Duration::days(1), "1d"),
+                                                (Duration::hours(1), "1h"),
+                                                (Duration::minutes(1), "1m"),
+                                                (Duration::milliseconds(1), "1ms"),
+                                                (Duration::microseconds(1), "1us"),
+                                                (Duration::nanoseconds(1), "1ns"),
+                                                (Duration::seconds(31449599) +
+                                                 Duration::nanoseconds(999999999),
+                                                 "51w6d23h59m59s999ms999us999ns")];
 
         for (dur, expected_string) in cases {
             let expected_string = expected_string.to_string();

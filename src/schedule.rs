@@ -147,19 +147,16 @@ mod test {
         use super::DateTimeBound::*;
         use chrono::{DateTime, Local, TimeZone};
 
-        let cases: Vec<(DateTimeBound, Option<DateTime<Local>>)> = vec![
-            (None, Option::None),
-            (Definite(Local.ymd(2016, 11, 16).and_hms(10, 30, 0)),
-                Some(Local.ymd(2016, 11, 16).and_hms(10, 30, 0))),
-            (Yearly(Local.ymd(2016, 11, 16).and_hms(10, 30, 0)),
-                Some(Local.ymd(2018, 11, 16).and_hms(10, 30, 0))),
-            (Yearly(Local.ymd(2016, 1, 1).and_hms(0, 0, 0)),
-                Some(Local.ymd(2018, 1, 1).and_hms(0, 0, 0))),
-            (Yearly(Local.ymd(2016, 12, 31).and_hms(23, 59, 59)),
-                Some(Local.ymd(2018, 12, 31).and_hms(23, 59, 59))),
-            (Yearly(Local.ymd(2012, 2, 29).and_hms(0, 0, 0)),
-                Option::None), // leap day
-        ];
+        let cases: Vec<(DateTimeBound, Option<DateTime<Local>>)> = vec![(None, Option::None),
+                 (Definite(Local.ymd(2016, 11, 16).and_hms(10, 30, 0)),
+                  Some(Local.ymd(2016, 11, 16).and_hms(10, 30, 0))),
+                 (Yearly(Local.ymd(2016, 11, 16).and_hms(10, 30, 0)),
+                  Some(Local.ymd(2018, 11, 16).and_hms(10, 30, 0))),
+                 (Yearly(Local.ymd(2016, 1, 1).and_hms(0, 0, 0)),
+                  Some(Local.ymd(2018, 1, 1).and_hms(0, 0, 0))),
+                 (Yearly(Local.ymd(2016, 12, 31).and_hms(23, 59, 59)),
+                  Some(Local.ymd(2018, 12, 31).and_hms(23, 59, 59))),
+                 (Yearly(Local.ymd(2012, 2, 29).and_hms(0, 0, 0)), Option::None) /* leap day */];
         let from = Local.ymd(2018, 1, 1).and_hms(0, 0, 0);
 
         for (bound, expected_result) in cases {
@@ -173,13 +170,12 @@ mod test {
         use super::next_weekday;
         use chrono::{Date, Local, TimeZone, Weekday};
         // (date, weekday, result)
-        let cases: Vec<(Date<Local>, Weekday, Date<Local>)> = vec![
-            (Local.ymd(2016, 11, 16), Weekday::Wed, Local.ymd(2016, 11, 16)),
-            (Local.ymd(2016, 11, 16), Weekday::Fri, Local.ymd(2016, 11, 18)),
-            (Local.ymd(2016, 11, 16), Weekday::Tue, Local.ymd(2016, 11, 22)),
-            (Local.ymd(2016, 12, 30), Weekday::Tue, Local.ymd(2017, 1, 3)),
-            (Local.ymd(2016, 11, 16), Weekday::Tue, Local.ymd(2016, 11, 22)),
-        ];
+        let cases: Vec<(Date<Local>, Weekday, Date<Local>)> =
+            vec![(Local.ymd(2016, 11, 16), Weekday::Wed, Local.ymd(2016, 11, 16)),
+                 (Local.ymd(2016, 11, 16), Weekday::Fri, Local.ymd(2016, 11, 18)),
+                 (Local.ymd(2016, 11, 16), Weekday::Tue, Local.ymd(2016, 11, 22)),
+                 (Local.ymd(2016, 12, 30), Weekday::Tue, Local.ymd(2017, 1, 3)),
+                 (Local.ymd(2016, 11, 16), Weekday::Tue, Local.ymd(2016, 11, 22))];
 
         for (date, weekday, expected_result) in cases {
             let result = next_weekday(&date, &weekday);

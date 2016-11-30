@@ -676,24 +676,30 @@ mod test {
             println!("scheduling tests");
             for _ in 0..10 {
                 let (tx, rx) = channel::<()>();
-                let guard = schedule_runner.schedule(Schedule::default(), Box::new(|| { }));
-                // guard.update_data(Box::new(move || {
-                //     tx.send(()).unwrap();
-                // }));
+                let guard = schedule_runner.schedule(Schedule::default(),
+                                                     Box::new(|| {
+                                                     }));
+                guard.update_data(Box::new(move || {
+                    tx.send(()).unwrap();
+                }));
                 println!("updating schedule");
                 guard.update_schedule(schedule.clone());
                 guards.push((rx, guard));
             }
-            // let rxs: Vec<_> = guards.into_iter().map(|(rx, guard)| {
-            //     rx.recv_timeout(Duration::from_millis(50)).ok().expect("schedule did not run in time");
-            //     guard.stop();
-            //     rx
-            // }).collect();
-            // for rx in rxs.iter() {
-            //     rx.recv_timeout(Duration::from_millis(50))
-            //         .err()
-            //         .expect("schedule ran again when it should not have");
-            // }
+            let rxs: Vec<_> = guards.into_iter()
+                .map(|(rx, guard)| {
+                    rx.recv_timeout(Duration::from_millis(50))
+                        .ok()
+                        .expect("schedule did not run in time");
+                    guard.stop();
+                    rx
+                })
+                .collect();
+            for rx in rxs.iter() {
+                rx.recv_timeout(Duration::from_millis(50))
+                    .err()
+                    .expect("schedule ran again when it should not have");
+            }
         }
 
         schedule_runner.stop();

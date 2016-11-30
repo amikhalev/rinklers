@@ -79,8 +79,10 @@ fn main() {
     init_log();
 
     use std::fs::File;
-    let file = File::open("config.json").unwrap_or_else(|err| panic!("error opening config file: {}", err));
-    let config: Config = serde_json::from_reader(file).unwrap_or_else(|err| panic!("error parsing config file: {}", err));
+    let file = File::open("config.json")
+        .unwrap_or_else(|err| panic!("error opening config file: {}", err));
+    let config: Config = serde_json::from_reader(file)
+        .unwrap_or_else(|err| panic!("error parsing config file: {}", err));
     debug!("config: {:?}", config);
 
     let sections: Vec<SectionRef>;
@@ -88,7 +90,8 @@ fn main() {
     let program_runner = ProgramRunner::start_new(section_runner.clone());
 
     info!("initializing sections");
-    sections = config.sections.iter()
+    sections = config.sections
+        .iter()
         .map(|sec_conf| sec_conf.to_section())
         .collect();
 
