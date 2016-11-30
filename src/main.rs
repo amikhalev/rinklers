@@ -79,8 +79,8 @@ fn main() {
     init_log();
 
     use std::fs::File;
-    let file = File::open("config.json").expect("error opening config file");
-    let config: Config = serde_json::from_reader(file).expect("error parsing config file");
+    let file = File::open("config.json").unwrap_or_else(|err| panic!("error opening config file: {}", err));
+    let config: Config = serde_json::from_reader(file).unwrap_or_else(|err| panic!("error parsing config file: {}", err));
     debug!("config: {:?}", config);
 
     let sections: Vec<SectionRef>;
