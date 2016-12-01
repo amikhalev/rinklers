@@ -164,6 +164,14 @@ pub struct CondvarGuard<'a, T>
     condvar: &'a Condvar,
 }
 
+impl<'a, T> CondvarGuard<'a, T> {
+    fn new(mutex_guard: MutexGuard<'a, T>, condvar: &'a Condvar) -> Self {
+        CondvarGuard {
+            mutex_guard: mutex_guard, condvar: condvar,
+        }
+    }
+}
+
 impl<'mutex, T> Deref for CondvarGuard<'mutex, T> {
     type Target = T;
 
@@ -189,16 +197,14 @@ impl<'a, T> Drop for CondvarGuard<'a, T> {
 pub trait LockCondvarGuard<T> {
     /// Locks `self`, notifying the `Convar` when the returned `CondvarGuard` is dropped and
     /// unlocks `self`
-    fn lock_condvar<'a>(&'a self, condvar: &'a Condvar) -> CondvarGuard<'a, T>;
+    fn lock_condvar<'a>(&'a self, condvar: &'a Condvar) -> LockResult<CondvarGuard<'a, T>>;
 }
 
 impl<T> LockCondvarGuard<T> for Mutex<T> {
-    fn lock_condvar<'a>(&'a self, condvar: &'a Condvar) -> CondvarGuard<'a, T> {
-        let guard = self.lock().unwrap();
-        CondvarGuard {
-            mutex_guard: guard,
-            condvar: condvar,
-        }
+    fn lock_condvar<'a>(&'a self, condvar: &'a Condvar) -> LockResult<CondvarGuard<'a, T>> {
+        let guard = self.lock();
+        guard.map(|guard| CondvarGuard::new(guard, condvar))
+            .map_err(|poison_err| PoisonError::new(CondvarGuard::new(poison_err.into_inner(), condvar)))
     }
 }
 

@@ -66,13 +66,23 @@ impl<E: Executor> SchedRun<E> {
         self.next_run.map(|next_run| next_run - Local::now())
     }
 
+    fn update_schedule(&mut self, new_schedule: Schedule) -> Schedule {
+        let old_schedule = mem::replace(&mut self.sched, new_schedule);
+        self.update_next_run();
+        old_schedule
+    }
+
     fn update_next_run(&mut self) -> Option<DateTime<Local>> {
         self.next_run = self.sched.next_run();
-        if let Some(till_run) = self.till_run() {
-            trace!("next run for item \"{}\" will be in {:?}",
-                   E::data_string(&self.data),
-                   chrono_duration_string(&till_run));
-        }
+        let duration_str = if let Some(till_run) = self.till_run() {
+            format!("in {}", chrono_duration_string(&till_run))
+        } else {
+            "never".into()
+        };
+        trace!("next run for item \"{}\" will be {} (at {:?})",
+               E::data_string(&self.data),
+               duration_str,
+               self.next_run);
         self.next_run
     }
 }
@@ -462,7 +472,6 @@ mod index_map {
 
 use self::index_map::IndexMap;
 
-#[derive(Debug)]
 struct RunnerData<E>
     where E: Executor
 {
@@ -476,6 +485,15 @@ impl<E: Executor> RunnerData<E> {
             quit: false,
             runs: IndexMap::new(),
         }
+    }
+}
+
+impl<E: Executor> fmt::Debug for RunnerData<E> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_struct("RunnerData")
+            .field("quit", &self.quit)
+            .field("runs", &self.runs.iter().count())
+            .finish()
     }
 }
 
@@ -497,7 +515,7 @@ impl<E: Executor> RunnerState<E> {
     /// Begins an update to the `RunnerState`. When the `CondvarGuard` is dropped, it will notify
     /// the runner thread of the update.
     fn update<'a>(&'a self) -> CondvarGuard<'a, RunnerData<E>> {
-        self.data.lock_condvar(&self.condvar)
+        self.data.lock_condvar(&self.condvar).unwrap()
     }
 
     /// Notifies the runner thread of an update
@@ -581,13 +599,14 @@ impl<E> ScheduleRunner<E>
 
     fn remove(&self, index: usize) -> Option<SchedRun<E>> {
         let mut data = self.state.update();
-        data.runs.remove(index)
+        let result = data.runs.remove(index);
+        result
     }
 
     fn update_schedule(&self, index: usize, new_schedule: Schedule) -> Schedule {
         let mut data = self.state.update();
         let ref mut run = data.runs[index];
-        mem::replace(&mut run.sched, new_schedule)
+        run.update_schedule(new_schedule)
     }
 
     fn update_data(&self, index: usize, new_data: E::Data) -> E::Data {
@@ -598,8 +617,7 @@ impl<E> ScheduleRunner<E>
 
     /// Stops the `ScheduleRunner`, waiting for the thread to exit
     pub fn stop(self) {
-        let mut data = self.state.update();
-        data.quit = true;
+        // drops self which will stop the thread
     }
 
     fn run(state: &RunnerState<E>, executor: E) {
@@ -611,7 +629,7 @@ impl<E> ScheduleRunner<E>
             trace!("sleeping for {:?}", wait_period);
             let mut data_lock = wait_condvar(&condvar, &data, &wait_period).unwrap();
 
-            // trace!("ScheduleRunner state {:?}", *data_lock);
+            trace!("ScheduleRunner woke up. state: {:?}", *data_lock);
             if data_lock.quit {
                 debug!("quitting ScheduleRunner");
                 return;
@@ -619,7 +637,8 @@ impl<E> ScheduleRunner<E>
 
             wait_period = WaitPeriod::Wait;
             for (_, run) in &mut data_lock.runs {
-                if let Some(left) = run.till_run() {
+                let till_run = run.till_run();
+                if let Some(left) = till_run {
                     if left <= CDuration::zero() {
                         // if the time left is less than or equal to zero, it is time for the
                         // event to run
@@ -635,16 +654,20 @@ impl<E> ScheduleRunner<E>
                 }
             }
             // only keep runs that will occur at some point in the future
-            data_lock.runs.retain(|run| run.next_run.is_some());
+            // data_lock.runs.retain(|run| run.next_run.is_some());
         }
     }
 }
 
 impl<E: Executor> Drop for ScheduleRunner<E> {
     fn drop(&mut self) {
-        // waits for the thread to finish, because it references data stored in self, so it cannot
-        // outlive self
+        // stops the thread and waits for it to finish, because it references data stored in self,
+        // so it cannot outlive self
         if let Some(join_handle) = self.join_handle.take() {
+            {
+                let mut data = self.state.update();
+                data.quit = true;
+            }
             join_handle.join().unwrap();
         }
     }
@@ -658,22 +681,19 @@ mod test {
     fn test_schedule_runner() {
         use schedule::{DateTimeBound, Schedule};
         use chrono::{Local, Datelike, Duration as CDuration};
-        use std::time::Duration;
         use std::sync::mpsc::channel;
         let schedule_runner = ScheduleRunner::start_new(FnExecutor);
 
         let delay_time = CDuration::milliseconds(25);
         let now = Local::now();
         let today = now.weekday();
-        let schedule = Schedule::new(vec![now.time() + delay_time,
-                                          now.time() + delay_time + delay_time],
+        let schedule = Schedule::new(vec![now.time() + delay_time, now.time() + delay_time * 2],
                                      vec![today],
                                      DateTimeBound::None,
                                      DateTimeBound::None);
 
         {
             let mut guards: Vec<_> = Vec::new();
-            println!("scheduling tests");
             for _ in 0..10 {
                 let (tx, rx) = channel::<()>();
                 let guard = schedule_runner.schedule(Schedule::default(),
@@ -682,13 +702,13 @@ mod test {
                 guard.update_data(Box::new(move || {
                     tx.send(()).unwrap();
                 }));
-                println!("updating schedule");
                 guard.update_schedule(schedule.clone());
                 guards.push((rx, guard));
             }
+            let timeout = (delay_time * 2).to_std().unwrap();
             let rxs: Vec<_> = guards.into_iter()
                 .map(|(rx, guard)| {
-                    rx.recv_timeout(Duration::from_millis(50))
+                    rx.recv_timeout(timeout)
                         .ok()
                         .expect("schedule did not run in time");
                     guard.stop();
@@ -696,7 +716,7 @@ mod test {
                 })
                 .collect();
             for rx in rxs.iter() {
-                rx.recv_timeout(Duration::from_millis(50))
+                rx.recv_timeout(timeout)
                     .err()
                     .expect("schedule ran again when it should not have");
             }
