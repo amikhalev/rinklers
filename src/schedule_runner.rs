@@ -43,8 +43,6 @@ impl Executor for FnExecutor {
     }
 }
 
-use std::marker::PhantomData;
-
 struct SchedRun<E: Executor> {
     sched: Schedule,
     data: E::Data,
@@ -561,7 +559,6 @@ pub struct ScheduleRunner<E>
 {
     state: Box<RunnerState<E>>,
     join_handle: Option<JoinHandle<()>>,
-    _phantom_data: PhantomData<E>,
 }
 
 impl<E> ScheduleRunner<E>
@@ -574,7 +571,6 @@ impl<E> ScheduleRunner<E>
         let mut runner = ScheduleRunner {
             state: Box::new(RunnerState::new()),
             join_handle: None,
-            _phantom_data: PhantomData::default(),
         };
         runner.join_handle = unsafe {
             // this should be ok, because all of the referenced data is stored in the same object

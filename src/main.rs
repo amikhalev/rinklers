@@ -100,17 +100,16 @@ fn main() {
     }
 
     use chrono::NaiveTime;
-    let schedule = Schedule::new(vec![NaiveTime::from_hms(19, 06, 20)],
+    info!("initializing programs");
+    let schedule = Schedule::new(vec![NaiveTime::from_hms(9, 30, 30)],
                                  every_day(),
                                  DateTimeBound::None,
                                  DateTimeBound::None);
-    let program = Program::new("Test Program",
-                               vec![(sections[0].clone(), Duration::from_secs(2))],
-                               schedule);
-    let program = Arc::new(program);
+    let mut program = Program::new("Test Program",
+                                   vec![(sections[0].clone(), Duration::from_secs(2))],
+                                   schedule);
 
-    program_runner.add_program(program.clone());
-    // program.run_sync(&section_runner);
+    program_runner.schedule_program(program.clone());
 
     Trap::trap(&[2, 15]).next(); // SIGINT, SIGKILL
 
