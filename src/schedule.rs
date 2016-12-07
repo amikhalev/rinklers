@@ -10,7 +10,7 @@ pub type TimeSet = BTreeSet<NaiveTime>;
 /// A set of days of week (for [Schedule](struct.Schedule.html))
 pub type WeekdaySet = HashSet<Weekday>;
 
-/// Returns a [WeekdaySet](type.WeekdaySet.html) of every day of the week
+/// Returns a [`WeekdaySet`](type.WeekdaySet.html) of every day of the week
 pub fn every_day() -> WeekdaySet {
     use num::FromPrimitive;
     (0..7)
@@ -105,13 +105,13 @@ impl Schedule {
         };
         let reference = match from {
             Some(from) if &from > reference => from,
-            _ => reference.clone(),
+            _ => *reference,
         };
         let mut candidate: Option<DateTime<Local>> = None;
-        for weekday in self.weekdays.iter() {
-            for time in self.times.iter() {
+        for weekday in &self.weekdays {
+            for time in &self.times {
                 let date = next_weekday(&reference.date(), weekday)
-                    .and_time(time.clone())
+                    .and_time(*time)
                     .map(|date| if date < reference {
                         date + CDuration::weeks(1)
                     } else {

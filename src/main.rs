@@ -114,7 +114,7 @@ impl Config {
     fn to_programs(&self, sections: &[SectionRef]) -> ConfigResult<Vec<ProgramRef>> {
         self.programs
             .iter()
-            .map(|program_conf| program_conf.to_program(&sections))
+            .map(|program_conf| program_conf.to_program(sections))
             .collect::<ConfigResult<_>>()
     }
 }

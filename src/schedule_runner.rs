@@ -1,4 +1,4 @@
-//! ScheduleRunner for executing events based on Schedules
+//! `ScheduleRunner` for executing events based on Schedules
 
 use std::thread::{self, JoinHandle};
 use std::sync::{Mutex, Condvar};
@@ -7,7 +7,7 @@ use chrono::{DateTime, Local, Duration as CDuration};
 use schedule::Schedule;
 use util::{LockCondvarGuard, CondvarGuard, chrono_duration_string};
 
-/// Executes events triggered by a [ScheduleRunner](struct.ScheduleRunner.html)
+/// Executes events triggered by a [`ScheduleRunner`](struct.ScheduleRunner.html)
 pub trait Executor: Send {
     /// The data that is stored by the `ScheduleRunner` when the event is scheduled and that will
     /// be passed to the executor when the event is triggered.
@@ -170,8 +170,7 @@ mod index_map {
         }
 
         pub fn remove(&mut self, idx: usize) -> Option<E> {
-            let ref mut entry = self.entries[idx];
-            Self::remove_entry(&mut self.next_empty, idx, entry)
+            Self::remove_entry(&mut self.next_empty, idx, &mut self.entries[idx])
         }
 
         pub fn retain<F>(&mut self, mut f: F)
@@ -512,7 +511,7 @@ impl<E: Executor> RunnerState<E> {
 
     /// Begins an update to the `RunnerState`. When the `CondvarGuard` is dropped, it will notify
     /// the runner thread of the update.
-    fn update<'a>(&'a self) -> CondvarGuard<'a, RunnerData<E>> {
+    fn update(&self) -> CondvarGuard<RunnerData<E>> {
         self.data.lock_condvar(&self.condvar).unwrap()
     }
 
@@ -523,7 +522,7 @@ impl<E: Executor> RunnerState<E> {
     }
 }
 
-/// A guard returned by [ScheduleRunner.schedule](struct.ScheduleRunner.html#fn.schedule) which
+/// A guard returned by [`ScheduleRunner.schedule`](struct.ScheduleRunner.html#fn.schedule) which
 /// allows for modifying a scheduled run or removing it
 pub struct ScheduleGuard<'a, E>
     where E: Executor + 'static
@@ -584,7 +583,7 @@ impl<E> ScheduleRunner<E>
     }
 
     /// Schedules an event to be run using the `Executor` whenever the schedule triggers it.
-    pub fn schedule<'a>(&'a self, schedule: Schedule, sched_data: E::Data) -> ScheduleGuard<'a, E> {
+    pub fn schedule(&self, schedule: Schedule, sched_data: E::Data) -> ScheduleGuard<E> {
         let mut data = self.state.update();
         let idx = data.runs.insert(SchedRun::new(schedule, sched_data));
         ScheduleGuard {
@@ -595,20 +594,17 @@ impl<E> ScheduleRunner<E>
 
     fn remove(&self, index: usize) -> Option<SchedRun<E>> {
         let mut data = self.state.update();
-        let result = data.runs.remove(index);
-        result
+        data.runs.remove(index)
     }
 
     fn update_schedule(&self, index: usize, new_schedule: Schedule) -> Schedule {
         let mut data = self.state.update();
-        let ref mut run = data.runs[index];
-        run.update_schedule(new_schedule)
+        data.runs[index].update_schedule(new_schedule)
     }
 
     fn update_data(&self, index: usize, new_data: E::Data) -> E::Data {
         let mut data = self.state.update();
-        let ref mut run = data.runs[index];
-        mem::replace(&mut run.data, new_data)
+        mem::replace(&mut data.runs[index].data, new_data)
     }
 
     /// Stops the `ScheduleRunner`, waiting for the thread to exit
@@ -623,7 +619,7 @@ impl<E> ScheduleRunner<E>
         let mut wait_period = WaitPeriod::Wait;
         loop {
             trace!("sleeping for {:?}", wait_period);
-            let mut data_lock = wait_condvar(&condvar, &data, &wait_period).unwrap();
+            let mut data_lock = wait_condvar(condvar, data, &wait_period).unwrap();
 
             trace!("ScheduleRunner woke up. state: {:?}", *data_lock);
             if data_lock.quit {

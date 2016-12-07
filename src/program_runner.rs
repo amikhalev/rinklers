@@ -1,7 +1,7 @@
-//! Contains [ProgramRunner](struct.ProgramRunner.html)
+//! Contains `ProgramRunner`
 use schedule_runner::{Executor, ScheduleRunner, ScheduleGuard};
 use section_runner::SectionRunner;
-use program::{ProgramRef};
+use program::ProgramRef;
 
 struct ProgramExecutor {
     section_runner: SectionRunner,
@@ -33,16 +33,13 @@ pub struct ProgramGuard<'a> {
 }
 
 impl<'a> ProgramGuard<'a> {
-    fn new(schedule_guard: ScheduleGuard<'a, ProgramExecutor>)
-           -> ProgramGuard<'a> {
-        ProgramGuard {
-            schedule_guard: schedule_guard,
-        }
+    fn new(schedule_guard: ScheduleGuard<'a, ProgramExecutor>) -> ProgramGuard<'a> {
+        ProgramGuard { schedule_guard: schedule_guard }
     }
 
     /// Stops a program run, removing it from the `ProgramRunner`
     pub fn stop(self) {
-        self.schedule_guard .stop();
+        self.schedule_guard.stop();
     }
 }
 
@@ -59,7 +56,7 @@ impl ProgramRunner {
     }
 
     /// Schedules a program
-    pub fn schedule_program<'a>(&'a self, program: ProgramRef) -> ProgramGuard<'a> {
+    pub fn schedule_program(&self, program: ProgramRef) -> ProgramGuard {
         let schedule_guard = self.sched_runner
             .schedule(program.schedule().clone(), program.clone());
         ProgramGuard::new(schedule_guard)

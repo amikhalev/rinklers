@@ -1,4 +1,4 @@
-//! Contains [SectionRunner](struct.SectionRunner.html)
+//! Contains `SectionRunner`
 
 use std::time::{Duration, Instant};
 use std::sync::mpsc::{Sender, Receiver, channel};
@@ -8,7 +8,7 @@ use std::fmt;
 use section::SectionRef;
 use util::duration_string;
 
-/// An operation that can be sent to a SectionRunner
+/// An operation that can be sent to a `SectionRunner`
 #[derive(Debug)]
 enum Op {
     Quit,
@@ -16,7 +16,7 @@ enum Op {
 }
 
 /// A notification that can be returned from
-/// [run_section](struct.SectionRunner.html#method.run_section)
+/// [`run_section`](struct.SectionRunner.html#method.run_section)
 pub enum RunNotification {
     /// The section has started running
     Start,
@@ -154,25 +154,23 @@ impl SectionRunner {
                         wait_period = WaitPeriod::AtMost(sleep_dur);
                         Some(run)
                     }
+                } else if let Some(run) = queue.pop_front() {
+                    debug!("running section {:?} for {}",
+                           run.sec,
+                           duration_string(&run.dur));
+                    run.sec.set_state(true);
+                    // if the receiver is closed, it's ok
+                    let _ = run.notification_sender.send(RunNotification::Start);
+                    wait_period = WaitPeriod::AtMost(run.dur);
+                    Some(Run {
+                        start_time: Instant::now(),
+                        sec: run.sec,
+                        dur: run.dur,
+                        notify: run.notification_sender,
+                    })
                 } else {
-                    if let Some(run) = queue.pop_front() {
-                        debug!("running section {:?} for {}",
-                               run.sec,
-                               duration_string(&run.dur));
-                        run.sec.set_state(true);
-                        // if the receiver is closed, it's ok
-                        let _ = run.notification_sender.send(RunNotification::Start);
-                        wait_period = WaitPeriod::AtMost(run.dur);
-                        Some(Run {
-                            start_time: Instant::now(),
-                            sec: run.sec,
-                            dur: run.dur,
-                            notify: run.notification_sender,
-                        })
-                    } else {
-                        wait_period = WaitPeriod::Wait;
-                        None
-                    }
+                    wait_period = WaitPeriod::Wait;
+                    None
                 }
             };
         }

@@ -1,22 +1,32 @@
 {
-  "sections": [
-    { "name": "Front Yard Middle", "pin": 23 },
-    { "name": "Front Yard Left", "pin": 17 },
-    { "name": "Front Yard Right", "pin": 21 },
-    { "name": "Back Yard Middle", "pin": 22 },
-    { "name": "Back Yard Sauna", "pin": 25 },
-    { "name": "Garden", "pin": 24 }
-  ],
-  "programs": [
-    {
-      "name": "Test Program 1",
-      "sequence": [
-        { "section": 0, "duration": "2s" }
-      ],
-      "schedule": {
-        "times": [ "0:30:20" ],
-        "weekdays": [ "Wed" ]
-      }
-    }
-  ]
+    "sections": [{
+        "name": "Front Yard Middle",
+        "pin": 23
+    }, {
+        "name": "Front Yard Left",
+        "pin": 17
+    }, {
+        "name": "Front Yard Right",
+        "pin": 21
+    }, {
+        "name": "Back Yard Middle",
+        "pin": 22
+    }, {
+        "name": "Back Yard Sauna",
+        "pin": 25
+    }, {
+        "name": "Garden",
+        "pin": 24
+    }],
+    "programs": [{
+        "name": "Test Program 1",
+        "sequence": [{
+            "section": 0,
+            "duration": "2s"
+        }],
+        "schedule": {
+            "times": ["0:30:20"],
+            "weekdays": ["Wed"]
+        }
+    }]
 }

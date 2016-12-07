@@ -100,7 +100,7 @@ impl Program {
 
     /// Runs the program, using `runner` to queue each section to be run for each specified period
     /// of time. Return the `RunNotifier`s for all of the sections that were queued
-    pub fn queue_run<'a, 'b>(&'a self, runner: &'b SectionRunner) -> Vec<RunNotifier> {
+    pub fn queue_run(&self, runner: &SectionRunner) -> Vec<RunNotifier> {
         self.sequence
             .iter()
             .map(|item| runner.run_section(item.section.clone(), item.duration))

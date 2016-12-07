@@ -59,7 +59,7 @@ pub fn wait_receiver<T>(receiver: &Receiver<T>, period: &WaitPeriod) -> Option<T
     match *period {
         Wait => Some(receiver.recv().unwrap()),
         AtMost(ref dur) => {
-            match receiver.recv_timeout(dur.clone()) {
+            match receiver.recv_timeout(*dur) {
                 Ok(recv) => Some(recv),
                 Err(RecvTimeoutError::Timeout) => Option::None,
                 e @ Err(_) => {
@@ -83,7 +83,7 @@ pub fn wait_condvar<'a, T>(condvar: &Condvar,
         Wait => lock.and_then(|guard| condvar.wait(guard)),
         AtMost(ref dur) => {
             lock.and_then(|guard| {
-                condvar.wait_timeout(guard, dur.clone())
+                condvar.wait_timeout(guard, *dur)
                     .map(|res| res.0)
                     .map_err(|err| PoisonError::new(err.into_inner().0))
             })
@@ -209,8 +209,8 @@ pub fn duration_from_str(s: &str) -> Result<Duration, DurationFromStrError> {
     })
 }
 
-/// Deserializes a `std::time::Duration`. Converts it to a string and then uses [duration_from_str]
-/// (#fn.duration_from_str).
+/// Deserializes a `std::time::Duration`. Converts it to a string and then uses
+/// [`duration_from_str`](#fn.duration_from_str).
 pub fn deserialize_duration<D>(d: &mut D) -> Result<Duration, D::Error>
     where D: de::Deserializer
 {
@@ -224,7 +224,7 @@ pub fn duration_string(duration: &::std::time::Duration) -> String {
 }
 
 /// A guard returned by
-/// [LockCondvarGuard.lock_condvar](trait.LockCondvarGuard.html#fn.lock_condvar).
+/// [`LockCondvarGuard.lock_condvar`](trait.LockCondvarGuard.html#fn.lock_condvar).
 /// It `Deref`s and `DerefMut`s to the underlying `MutexGuard`. It notifies on the `Condvar` when
 /// it is `Drop`ed.
 pub struct CondvarGuard<'a, T>
