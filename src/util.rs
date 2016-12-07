@@ -1,11 +1,14 @@
 //! Contains various utilites that are used in the rest of the program
 
+use chrono;
+use time;
 use std::cmp::{PartialOrd, Ordering};
 use std::time::Duration;
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::sync::{Condvar, Mutex, MutexGuard, LockResult, PoisonError};
 use std::ops::{Deref, DerefMut};
 use std::fmt;
+use serde::{de, Deserialize};
 
 /// Represents a time to wait for when waiting for an event to occur.
 #[derive(Clone, PartialEq, Eq)]
@@ -148,6 +151,73 @@ pub fn chrono_duration_string(dur: &::chrono::Duration) -> String {
     s
 }
 
+quick_error! {
+    /// An error that can occur when converting a `String` to a `Duration`
+    #[derive(Debug)]
+    pub enum DurationFromStrError {
+        /// There was an error converting a `chrono::Duration` to a `std::time::Duration`
+        DurationToStd(err: time::OutOfRangeError) {
+            description("chrono::Duration out of range of std::time::Duration")
+            from()
+        }
+        /// There was an unexpected character when parsing a Duration
+        UnexpectedChar(c: char) {
+            description("There was an unexpected character when parsing a Duration")
+            display("expected number, whitespace or postfix. found {}", c)
+        }
+    }
+}
+
+/// Converts a `&str` to a `chrono::Duration` in a format where
+pub fn chrono_duration_from_str(s: &str) -> Result<chrono::Duration, DurationFromStrError> {
+    let mut dur = chrono::Duration::zero();
+    let mut num: i64 = 0;
+
+    let mut iter = s.chars()
+        .flat_map(|c| c.to_lowercase())
+        .peekable();
+    while let Some(c) = iter.next() {
+        if c.is_whitespace() {
+            continue;
+        }
+        if let Some(digit) = c.to_digit(10) {
+            num = num * 10 + digit as i64;
+            continue;
+        }
+        match (c, iter.peek().cloned()) {
+            ('w', _) => dur = dur + chrono::Duration::weeks(num),
+            ('d', _) => dur = dur + chrono::Duration::days(num),
+            ('h', _) => dur = dur + chrono::Duration::hours(num),
+            ('s', _) => dur = dur + chrono::Duration::seconds(num),
+            ('m', Some('s')) => dur = dur + chrono::Duration::milliseconds(num),
+            ('m', _) => dur = dur + chrono::Duration::minutes(num),
+            ('u', Some('s')) => dur = dur + chrono::Duration::microseconds(num),
+            ('n', Some('s')) => dur = dur + chrono::Duration::nanoseconds(num),
+            _ => return Err(DurationFromStrError::UnexpectedChar(c)),
+        }
+        num = 0;
+    }
+
+    Ok(dur)
+}
+
+/// Converts a `&str` to a `std::time::Duration`
+pub fn duration_from_str(s: &str) -> Result<Duration, DurationFromStrError> {
+    chrono_duration_from_str(s).and_then(|dur| {
+        dur.to_std()
+            .map_err(|err| err.into())
+    })
+}
+
+/// Deserializes a `std::time::Duration`. Converts it to a string and then uses [duration_from_str]
+/// (#fn.duration_from_str).
+pub fn deserialize_duration<D>(d: &mut D) -> Result<Duration, D::Error>
+    where D: de::Deserializer
+{
+    let s = try!(String::deserialize(d));
+    duration_from_str(&s).map_err(|err| de::Error::custom(format!("{}", err)))
+}
+
 /// Gets a string representation of a `std::time::Duration`
 pub fn duration_string(duration: &::std::time::Duration) -> String {
     chrono_duration_string(&::chrono::Duration::from_std(*duration).unwrap())
@@ -167,7 +237,8 @@ pub struct CondvarGuard<'a, T>
 impl<'a, T> CondvarGuard<'a, T> {
     fn new(mutex_guard: MutexGuard<'a, T>, condvar: &'a Condvar) -> Self {
         CondvarGuard {
-            mutex_guard: mutex_guard, condvar: condvar,
+            mutex_guard: mutex_guard,
+            condvar: condvar,
         }
     }
 }
@@ -204,7 +275,9 @@ impl<T> LockCondvarGuard<T> for Mutex<T> {
     fn lock_condvar<'a>(&'a self, condvar: &'a Condvar) -> LockResult<CondvarGuard<'a, T>> {
         let guard = self.lock();
         guard.map(|guard| CondvarGuard::new(guard, condvar))
-            .map_err(|poison_err| PoisonError::new(CondvarGuard::new(poison_err.into_inner(), condvar)))
+            .map_err(|poison_err| {
+                PoisonError::new(CondvarGuard::new(poison_err.into_inner(), condvar))
+            })
     }
 }
 
@@ -228,10 +301,15 @@ mod test {
                                                  Duration::nanoseconds(999999999),
                                                  "51w6d23h59m59s999ms999us999ns")];
 
-        for (dur, expected_string) in cases {
+        for &(ref dur, ref expected_string) in &cases {
             let expected_string = expected_string.to_string();
-            let string = chrono_duration_string(&dur);
+            let string = chrono_duration_string(dur);
             assert_eq!(string, expected_string);
+        }
+
+        for &(ref expected_dur, ref string) in &cases {
+            let dur: Duration = chrono_duration_from_str(string).unwrap();
+            assert_eq!(dur, *expected_dur);
         }
     }
 }

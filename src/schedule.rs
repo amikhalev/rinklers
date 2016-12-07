@@ -19,7 +19,7 @@ pub fn every_day() -> WeekdaySet {
 }
 
 /// Represents the different types of date-time bounds that can be on a schedule
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum DateTimeBound {
     /// There is no bound (ie. the Schedule extends with no limit)
     None,
@@ -57,11 +57,13 @@ impl DateTimeBound {
 }
 
 /// A schedule that determines when an event will occur.
-#[derive(Default, Debug, Clone)]
+#[derive(Default, Debug, Clone, Serialize, Deserialize)]
 pub struct Schedule {
     times: TimeSet,
     weekdays: WeekdaySet,
+    #[serde(default)]
     from: DateTimeBound,
+    #[serde(default)]
     to: DateTimeBound,
 }
 

@@ -7,12 +7,16 @@
 extern crate log;
 #[macro_use]
 extern crate serde_derive;
+#[macro_use]
+extern crate quick_error;
 
 extern crate env_logger;
 extern crate signal;
 extern crate chrono;
+extern crate time;
 extern crate num;
 extern crate colored;
+extern crate serde;
 extern crate serde_json;
 
 pub mod section;
@@ -25,7 +29,7 @@ pub mod util;
 
 pub use section::{Section, SectionRef, LogSection};
 pub use section_runner::SectionRunner;
-pub use program::Program;
+pub use program::{ProgItem, Program, ProgramRef};
 pub use program_runner::ProgramRunner;
 pub use schedule::{DateTimeBound, Schedule, every_day};
 
@@ -46,9 +50,73 @@ impl SectionConfig {
     }
 }
 
+quick_error!{
+    #[derive(Debug)]
+    enum ConfigError {
+        SectionOutOfRange(sec_idx: usize) {
+            description("Section index was out of range")
+            display("Section index {} is out of range", sec_idx)
+        }
+    }
+}
+
+type ConfigResult<T> = Result<T, ConfigError>;
+
+#[derive(Serialize, Deserialize, Debug)]
+struct ProgItemConfig {
+    section: usize,
+    #[serde(deserialize_with="util::deserialize_duration")]
+    duration: Duration,
+}
+
+impl ProgItemConfig {
+    fn to_prog_item(&self, sections: &[SectionRef]) -> ConfigResult<ProgItem> {
+        if self.section >= sections.len() {
+            Err(ConfigError::SectionOutOfRange(self.section))
+        } else {
+            Ok(ProgItem::new(sections[self.section].clone(), self.duration))
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+struct ProgramConfig {
+    name: String,
+    sequence: Box<[ProgItemConfig]>,
+    schedule: Schedule,
+}
+
+impl ProgramConfig {
+    fn to_program(&self, sections: &[SectionRef]) -> ConfigResult<ProgramRef> {
+        let sequence: ConfigResult<Vec<ProgItem>> = self.sequence
+            .iter()
+            .map(|prog_item| prog_item.to_prog_item(sections))
+            .collect();
+        let sequence = try!(sequence);
+        Ok(Program::new(self.name.clone(), sequence, self.schedule.clone()))
+    }
+}
+
 #[derive(Serialize, Deserialize, Debug)]
 struct Config {
     sections: Vec<SectionConfig>,
+    programs: Vec<ProgramConfig>,
+}
+
+impl Config {
+    fn to_sections(&self) -> Vec<SectionRef> {
+        self.sections
+            .iter()
+            .map(|sec_conf| sec_conf.to_section())
+            .collect()
+    }
+
+    fn to_programs(&self, sections: &[SectionRef]) -> ConfigResult<Vec<ProgramRef>> {
+        self.programs
+            .iter()
+            .map(|program_conf| program_conf.to_program(&sections))
+            .collect::<ConfigResult<_>>()
+    }
 }
 
 fn init_log() {
@@ -86,30 +154,25 @@ fn main() {
     debug!("config: {:?}", config);
 
     let sections: Vec<SectionRef>;
+    let programs: Vec<ProgramRef>;
     let section_runner = SectionRunner::start_new();
     let program_runner = ProgramRunner::start_new(section_runner.clone());
 
     info!("initializing sections");
-    sections = config.sections
-        .iter()
-        .map(|sec_conf| sec_conf.to_section())
-        .collect();
+    sections = config.to_sections();
 
-    for section in sections.iter() {
+    for section in &sections {
         section.set_state(false);
     }
 
-    use chrono::NaiveTime;
     info!("initializing programs");
-    let schedule = Schedule::new(vec![NaiveTime::from_hms(9, 30, 30)],
-                                 every_day(),
-                                 DateTimeBound::None,
-                                 DateTimeBound::None);
-    let mut program = Program::new("Test Program",
-                                   vec![(sections[0].clone(), Duration::from_secs(2))],
-                                   schedule);
 
-    program_runner.schedule_program(program.clone());
+    programs = config.to_programs(&sections)
+        .unwrap_or_else(|err| panic!("error deserializing programs: {}", err));
+
+    for program in &programs {
+        program_runner.schedule_program(program.clone());
+    }
 
     Trap::trap(&[2, 15]).next(); // SIGINT, SIGKILL
 

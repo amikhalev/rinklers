@@ -4,13 +4,27 @@ use std::sync::Arc;
 use std::iter::FromIterator;
 use std::time::Duration;
 use std::sync::Mutex;
-use section::Section;
+use section::SectionRef;
 use section_runner::{SectionRunner, RunNotification, RunNotifier};
 use schedule::Schedule;
 
-/// A single item in the sequence of execution of a program. Contains an `Arc` to a section to run
-/// and a `Duration` to run it for.
-pub type ProgItem = (Arc<Section>, Duration);
+/// A single item in the sequence of execution of a program.
+pub struct ProgItem {
+    /// An `Arc` to the `Section` to run in the item in the sequence of the `Program`
+    pub section: SectionRef,
+    /// How long to run it for
+    pub duration: Duration,
+}
+
+impl ProgItem {
+    /// Creates a new `ProgItem` from a `SectionRef` and a `Duration`
+    pub fn new(section: SectionRef, duration: Duration) -> Self {
+        ProgItem {
+            section: section,
+            duration: duration,
+        }
+    }
+}
 
 /// A function that is called when a Program is updated
 pub type UpdateFn = Box<Fn(&Program) + Send + Sync>;
@@ -69,7 +83,7 @@ impl Program {
     }
 
     /// Sets the sequence of this `Program` to `new_sequence`
-    pub fn set_sequence<I: IntoIterator<Item=ProgItem>>(&mut self, new_sequence: I) {
+    pub fn set_sequence<I: IntoIterator<Item = ProgItem>>(&mut self, new_sequence: I) {
         self.sequence = Vec::from_iter(new_sequence);
     }
 
@@ -89,7 +103,7 @@ impl Program {
     pub fn queue_run<'a, 'b>(&'a self, runner: &'b SectionRunner) -> Vec<RunNotifier> {
         self.sequence
             .iter()
-            .map(|item| runner.run_section(item.0.clone(), item.1))
+            .map(|item| runner.run_section(item.section.clone(), item.duration))
             .collect()
     }
 
