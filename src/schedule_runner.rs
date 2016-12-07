@@ -697,7 +697,8 @@ mod test {
                 guard.update_schedule(schedule.clone());
                 guards.push((rx, guard));
             }
-            let timeout = (delay_time * 2).to_std().unwrap();
+            // 10x margin of safety...
+            let timeout = (delay_time * 10).to_std().unwrap();
             let rxs: Vec<_> = guards.into_iter()
                 .map(|(rx, guard)| {
                     rx.recv_timeout(timeout)
@@ -707,6 +708,7 @@ mod test {
                     rx
                 })
                 .collect();
+            let timeout = (delay_time * 2).to_std().unwrap();
             for rx in rxs.iter() {
                 rx.recv_timeout(timeout)
                     .err()
