@@ -22,10 +22,10 @@ pub trait Section: Send + Sync {
 
 impl fmt::Debug for Section {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f,
-               "Section {{ name: \"{}\", state: {} }}",
-               self.name(),
-               self.state())
+        f.debug_struct("Section")
+               .field("name", self.name())
+               .field("state", &self.state())
+               .finish()
     }
 }
 
