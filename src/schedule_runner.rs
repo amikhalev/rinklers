@@ -1,10 +1,10 @@
 //! `ScheduleRunner` for executing events based on Schedules
 
+use super::*;
 use std::thread::{self, JoinHandle};
 use std::sync::{Mutex, Condvar};
 use std::{cmp, fmt, mem};
 use chrono::{DateTime, Local, Duration as CDuration};
-use schedule::Schedule;
 use util::{LockCondvarGuard, CondvarGuard, chrono_duration_string};
 
 /// Executes events triggered by a [`ScheduleRunner`](struct.ScheduleRunner.html)

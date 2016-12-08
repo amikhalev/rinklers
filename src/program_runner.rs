@@ -1,7 +1,6 @@
 //! Contains `ProgramRunner`
-use schedule_runner::{Executor, ScheduleRunner, ScheduleGuard};
-use section_runner::SectionRunner;
-use program::ProgramRef;
+use super::*;
+use schedule_runner::Executor;
 
 struct ProgramExecutor {
     section_runner: SectionRunner,

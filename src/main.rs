@@ -26,98 +26,20 @@ pub mod program_runner;
 pub mod schedule;
 pub mod schedule_runner;
 pub mod util;
+pub mod config;
 
 pub use section::{Section, SectionRef, LogSection};
-pub use section_runner::SectionRunner;
+pub use section_runner::{SectionRunner, RunNotifier, RunNotification};
 pub use program::{ProgItem, Program, ProgramRef};
 pub use program_runner::ProgramRunner;
 pub use schedule::{DateTimeBound, Schedule, every_day};
+pub use schedule_runner::{ScheduleRunner, ScheduleGuard};
+pub use config::Config;
 
 use std::time::Duration;
 use std::env;
 use std::sync::Arc;
 use signal::trap::Trap;
-
-#[derive(Serialize, Deserialize, Debug)]
-struct SectionConfig {
-    name: String,
-}
-
-impl SectionConfig {
-    fn to_section(&self) -> Arc<Section> {
-        // TODO: Check some environment variable and change the type of section created
-        Arc::new(LogSection::new_noop(&self.name as &str)) as SectionRef
-    }
-}
-
-quick_error!{
-    #[derive(Debug)]
-    enum ConfigError {
-        SectionOutOfRange(sec_idx: usize) {
-            description("Section index was out of range")
-            display("Section index {} is out of range", sec_idx)
-        }
-    }
-}
-
-type ConfigResult<T> = Result<T, ConfigError>;
-
-#[derive(Serialize, Deserialize, Debug)]
-struct ProgItemConfig {
-    section: usize,
-    #[serde(deserialize_with="util::deserialize_duration")]
-    duration: Duration,
-}
-
-impl ProgItemConfig {
-    fn to_prog_item(&self, sections: &[SectionRef]) -> ConfigResult<ProgItem> {
-        if self.section >= sections.len() {
-            Err(ConfigError::SectionOutOfRange(self.section))
-        } else {
-            Ok(ProgItem::new(sections[self.section].clone(), self.duration))
-        }
-    }
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-struct ProgramConfig {
-    name: String,
-    sequence: Box<[ProgItemConfig]>,
-    schedule: Schedule,
-}
-
-impl ProgramConfig {
-    fn to_program(&self, sections: &[SectionRef]) -> ConfigResult<ProgramRef> {
-        let sequence: ConfigResult<Vec<ProgItem>> = self.sequence
-            .iter()
-            .map(|prog_item| prog_item.to_prog_item(sections))
-            .collect();
-        let sequence = try!(sequence);
-        Ok(Program::new(self.name.clone(), sequence, self.schedule.clone()))
-    }
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-struct Config {
-    sections: Vec<SectionConfig>,
-    programs: Vec<ProgramConfig>,
-}
-
-impl Config {
-    fn to_sections(&self) -> Vec<SectionRef> {
-        self.sections
-            .iter()
-            .map(|sec_conf| sec_conf.to_section())
-            .collect()
-    }
-
-    fn to_programs(&self, sections: &[SectionRef]) -> ConfigResult<Vec<ProgramRef>> {
-        self.programs
-            .iter()
-            .map(|program_conf| program_conf.to_program(sections))
-            .collect::<ConfigResult<_>>()
-    }
-}
 
 fn init_log() {
     use log::{LogLevelFilter, LogLevel};

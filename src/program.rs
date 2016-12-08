@@ -1,12 +1,8 @@
 //! Contains [Program](struct.Program.html)
 
-use std::sync::Arc;
 use std::iter::FromIterator;
-use std::time::Duration;
 use std::sync::Mutex;
-use section::SectionRef;
-use section_runner::{SectionRunner, RunNotification, RunNotifier};
-use schedule::Schedule;
+use super::*;
 
 /// A single item in the sequence of execution of a program.
 pub struct ProgItem {
