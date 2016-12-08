@@ -1,3 +1,4 @@
+//! Items related to reading configuration from files
 use super::*;
 
 #[derive(Serialize, Deserialize, Debug)]
