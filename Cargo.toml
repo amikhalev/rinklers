@@ -15,9 +15,19 @@ serde = "0.8"
 serde_json = "0.8"
 serde_derive = "0.8"
 quick-error = "1.1"
+mqttc = "0.1"
+netopt = "0.1"
+libc = "0.2"
+nix = "0.7"
 
 [replace]
 # "chrono:0.2.25" = { git = "https://github.com/lifthrasiir/rust-chrono.git" }
+
+[replace."mqtt3:0.1.4"]
+git = "https://github.com/inre/rust-mq.git"
+
+[replace."mqttc:0.1.4"]
+git = "https://github.com/inre/rust-mq.git"
 
 [replace."chrono:0.2.25"]
 git = "https://github.com/amikhalev/rust-chrono.git"
