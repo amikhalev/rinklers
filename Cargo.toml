@@ -24,10 +24,10 @@ nix = "0.7"
 # "chrono:0.2.25" = { git = "https://github.com/lifthrasiir/rust-chrono.git" }
 
 [replace."mqtt3:0.1.4"]
-git = "https://github.com/inre/rust-mq.git"
+git = "https://github.com/amikhalev/rust-mq.git"
 
 [replace."mqttc:0.1.4"]
-git = "https://github.com/inre/rust-mq.git"
+git = "https://github.com/amikhalev/rust-mq.git"
 
 [replace."chrono:0.2.25"]
 git = "https://github.com/amikhalev/rust-chrono.git"
