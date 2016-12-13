@@ -25,8 +25,8 @@
             "duration": "2s"
         }],
         "schedule": {
-            "times": ["0:30:20"],
-            "weekdays": ["Wed"]
+            "times": ["9:41:0"],
+            "weekdays": ["Mon"]
         }
     }]
 }

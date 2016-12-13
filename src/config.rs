@@ -2,14 +2,20 @@
 use super::*;
 
 #[derive(Serialize, Deserialize, Debug)]
-struct SectionConfig {
+pub struct SectionConfig {
     name: String,
 }
 
 impl SectionConfig {
-    fn to_section(&self) -> Arc<Section> {
+    pub fn to_section(&self) -> SectionRef {
         // TODO: Check some environment variable and change the type of section created
         Arc::new(LogSection::new_noop(&self.name as &str)) as SectionRef
+    }
+
+    pub fn from_section(section: &Arc<Section>) -> Self {
+        SectionConfig {
+            name: section.name().clone(),
+        }
     }
 }
 

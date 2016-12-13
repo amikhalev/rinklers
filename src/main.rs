@@ -37,7 +37,7 @@ pub use program::{ProgItem, Program, ProgramRef};
 pub use program_runner::ProgramRunner;
 pub use schedule::{DateTimeBound, Schedule, every_day};
 pub use schedule_runner::{ScheduleRunner, ScheduleGuard};
-pub use config::{ConfigResult, Config};
+pub use config::{ConfigResult, Config, SectionConfig};
 pub use mqtt_api::MqttApi;
 
 use std::time::Duration;
@@ -120,7 +120,7 @@ fn init_log() {
 
 mod mqtt_api {
     use super::*;
-    use mqttc::{PubSub, QoS, PubOpt};
+    use mqttc::{PubSub, QoS, PubOpt, SubscribeTopic, TopicPath, Topic};
     use std::{thread, result, io};
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::os::unix::thread::JoinHandleExt;
@@ -205,18 +205,94 @@ mod mqtt_api {
                mut client: mqttc::Client,
                state: Arc<State>,
                running: Arc<AtomicBool>) {
-            // client.subscribe(("$SYS/#", QoS::AtLeastOnce)).unwrap();
+            let prefix_path = TopicPath::from_str(&prefix).expect("invalid prefix path");
 
-            client.publish(prefix + "connected",
-                         "true",
-                         PubOpt::at_least_once() | PubOpt::retain())
+            let pubopt = PubOpt::at_least_once() | PubOpt::retain();
+            client.publish(format!("{}connected", prefix), "true", pubopt)
+                .unwrap();
+
+            let sections: Vec<usize> = (0..state.sections.len()).collect();
+            let sections = serde_json::to_string(&sections).unwrap();
+            client.publish(format!("{}sections", prefix), sections, pubopt).unwrap();
+
+            for (i, section) in state.sections.iter().enumerate() {
+                let topic = format!("{}sections/{}", prefix, i);
+                let section_config = SectionConfig::from_section(&section);
+                let data = serde_json::to_string(&section_config).unwrap();
+                client.publish(topic, data, pubopt).unwrap();
+
+                let topic = format!("{}sections/{}/state", prefix, i);
+                let state = section.state();
+                let data = serde_json::to_string(&state).unwrap();
+                client.publish(topic, data, pubopt).unwrap();
+            }
+
+            client.subscribe(SubscribeTopic {
+                    topic_path: format!("{}sections/+/set_state", prefix),
+                    qos: QoS::ExactlyOnce,
+                })
                 .unwrap();
 
             while running.load(Ordering::SeqCst) {
                 if let Some(msg) = client.await().unwrap() {
-                    debug!("received mqtt message: topic: {}, payload: {}",
-                           msg.topic.path(),
-                           str::from_utf8(&*msg.payload).unwrap());
+                    let topics: Option<Vec<&str>> = msg.topic
+                        .topics()
+                        .iter()
+                        .skip(prefix_path.len() - 1)
+                        .map(|topic| match *topic {
+                            Topic::Normal(ref topic) => Some(topic.as_str()),
+                            _ => None,
+                        })
+                        .collect();
+                    let topics = match topics {
+                        Some(topics) => topics,
+                        _ => {
+                            warn!("strange path received with non-Topic::Normal components: {}",
+                                  msg.topic.path());
+                            continue;
+                        }
+                    };
+
+                    let payload_str = match str::from_utf8(&*msg.payload) {
+                        Ok(str) => str,
+                        Err(err) => {
+                            warn!("received message with invalid utf8 payload: {:?}", err);
+                            continue;
+                        }
+                    };
+
+                    trace!("received mqtt message: topic: {:?}, payload: {}",
+                           topics,
+                           payload_str);
+
+                    let collection_name: Option<&str> = topics.get(0).cloned();
+                    let index: Option<usize> = topics.get(1)
+                        .and_then(|idx_str| usize::from_str_radix(idx_str, 10).ok());
+                    let postfix = topics.get(2).cloned();
+
+                   macro_rules! unwrap_payload {
+                        ($payload_type:ty : $for_method:expr) => (
+                            match serde_json::from_str::<$payload_type>(payload_str) {
+                                Ok(payload) => payload,
+                                Err(_) => {
+                                    warn!("invalid payload for {}: \"{}\"", $for_method, payload_str);
+                                    continue;
+                                }
+                            }
+                        )
+                   }
+
+                    match (collection_name, index, postfix) {
+                        (Some("sections"), Some(idx), Some("set_state")) => {
+                            let sec_state: bool = unwrap_payload!(bool : "set_state");
+                            debug!("setting section {} state to {}", idx, sec_state);
+                            match state.sections.get(idx) {
+                                Some(ref section) => section.set_state(sec_state),
+                                None => warn!("section index out of range: {}", idx),
+                            };
+                        }
+                        _ => debug!("received message on invalid topic {}", msg.topic.path()),
+                    }
                 }
             }
 
@@ -253,7 +329,7 @@ fn main() {
         state.program_runner.schedule_program(program.clone());
     }
 
-    let prefix = "";
+    let prefix = "rinklers/";
     let client = mqtt_api::init_client(prefix)
         .unwrap_or_else(|err| panic!("error connecting to mqtt broker: {}", err));
     let mqtt_api = MqttApi::new(prefix, client, state.clone());
