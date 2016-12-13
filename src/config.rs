@@ -2,16 +2,20 @@
 use super::*;
 
 #[derive(Serialize, Deserialize, Debug)]
+/// A (usually JSON) config for a `Section`.
 pub struct SectionConfig {
     name: String,
 }
 
 impl SectionConfig {
+    /// Converts a `SectionConfig` to an `Arc<Section>` based on the config. The actual struct
+    /// which impls `Section` may vary at runtime.
     pub fn to_section(&self) -> SectionRef {
         // TODO: Check some environment variable and change the type of section created
         Arc::new(LogSection::new_noop(&self.name as &str)) as SectionRef
     }
 
+    /// Converts an `Arc<Section>` to a `SectionConfig`.
     pub fn from_section(section: &Arc<Section>) -> Self {
         SectionConfig {
             name: section.name().clone(),
