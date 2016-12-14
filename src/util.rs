@@ -5,7 +5,7 @@ use time;
 use std::cmp::{PartialOrd, Ordering};
 use std::time::Duration;
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
-use std::sync::{Condvar, Mutex, MutexGuard, LockResult, PoisonError};
+use std::sync::{Condvar, Mutex, MutexGuard, LockResult, PoisonError, Arc};
 use std::ops::{Deref, DerefMut};
 use std::fmt;
 use serde::{de, Deserialize};
@@ -278,6 +278,57 @@ impl<T> LockCondvarGuard<T> for Mutex<T> {
             .map_err(|poison_err| {
                 PoisonError::new(CondvarGuard::new(poison_err.into_inner(), condvar))
             })
+    }
+}
+
+/// The state for a generic "runner" object. Specifically, this stores multi thread state in with a
+/// `Mutex`, that when updated will notify a thread using a `Condvar`.
+pub struct RunnerState<D> {
+    data: Mutex<D>,
+    condvar: Condvar,
+}
+
+impl<D> RunnerState<D> {
+    /// Creates a new `RunnerState` containing the specified data
+    pub fn new(data: D) -> Self {
+        RunnerState {
+            data: Mutex::new(data),
+            condvar: Condvar::new(),
+        }
+    }
+
+    /// Creates a new `RunnerState` in a `Box`
+    pub fn new_box(data: D) -> Box<Self> {
+        Box::new(Self::new(data))
+    }
+
+    /// Creates a new `RunnerState` in an `Arc`
+    pub fn new_arc(data: D) -> Arc<Self> {
+        Arc::new(Self::new(data))
+    }
+
+    /// Begins an update to the `RunnerState`, where changes to the underlying data can be made.
+    /// When the `CondvarGuard` is dropped, it will notify the runner thread of the update.
+    pub fn update(&self) -> CondvarGuard<D> {
+        self.data.lock_condvar(&self.condvar).unwrap()
+    }
+
+    /// Notifies the runner thread of an update
+    pub fn notify_update(&self) {
+        self.condvar.notify_one();
+    }
+
+    /// Waits for the state to update. Returns a `MutexGuard` on the data stored in the state.
+    pub fn wait_update(&self) -> LockResult<MutexGuard<D>> {
+        let guard = try!(self.data.lock());
+        self.condvar.wait(guard)
+    }
+
+    /// Waits for the state to update for `period`. Returns a `MutexGuard` on the data stored in
+    /// the state.
+    /// See [WaitPeriod](enum.WaitPeriod.html)
+    pub fn wait_update_for_period(&self, period: &WaitPeriod) -> LockResult<MutexGuard<D>> {
+        wait_condvar(&self.condvar, &self.data, period)
     }
 }
 

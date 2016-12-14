@@ -43,7 +43,7 @@ pub use mqtt_api::MqttApi;
 
 use std::time::Duration;
 use std::{env, str};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use signal::trap::Trap;
 
 /// The global state of the rinklers application
@@ -53,7 +53,7 @@ pub struct State {
     /// All of the programs defined in this rinklers instance
     pub programs: Vec<ProgramRef>,
     /// The `SectionRunner` for running sections (locked by a mutex so State is Sync)
-    pub section_runner: Mutex<SectionRunner>,
+    pub section_runner: SectionRunner,
     /// The `ProgramRunner` for running programs
     pub program_runner: ProgramRunner,
 }
@@ -78,7 +78,7 @@ impl State {
         let state = State {
             sections: sections,
             programs: programs,
-            section_runner: Mutex::new(section_runner),
+            section_runner: section_runner,
             program_runner: program_runner,
         };
         Ok(state)
@@ -87,10 +87,7 @@ impl State {
     /// Stops the `SectionRunner` and `ProgramRunner` associated with this state, consuming the
     /// state. This is drops the state.
     pub fn stop_all(self) {
-        self.section_runner
-            .into_inner()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .stop();
+        self.section_runner.stop();
         self.program_runner.stop();
     }
 }

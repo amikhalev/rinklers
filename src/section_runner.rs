@@ -1,19 +1,29 @@
 //! Contains `SectionRunner`
 
+use super::*;
 use std::time::{Duration, Instant};
 use std::sync::mpsc::{Sender, Receiver, channel};
 use std::thread::{self, JoinHandle};
 use std::collections::VecDeque;
 use std::fmt;
-use section::SectionRef;
 use util::duration_string;
 
-/// An operation that can be sent to a `SectionRunner`
 #[derive(Debug)]
-enum Op {
-    Quit,
-    QueueRun(SecRun),
+struct RunnerData {
+    quit: bool,
+    queue: VecDeque<SecRun>,
 }
+
+impl RunnerData {
+    fn new() -> Self {
+        RunnerData {
+            quit: false,
+            queue: VecDeque::new(),
+        }
+    }
+}
+
+type RunnerState = util::RunnerState<RunnerData>;
 
 /// A notification that can be returned from
 /// [`run_section`](struct.SectionRunner.html#method.run_section)
@@ -51,7 +61,7 @@ impl fmt::Debug for SecRun {
 /// Runs a thread in the background which manages a queue of section runs. Each section runs for a
 /// period of time determined by a `Duration`.
 pub struct SectionRunner {
-    tx: Sender<Op>,
+    state: Arc<RunnerState>,
     // only the first `SectionRunner` returned from `start_new` has the join_handle, every one
     // after that will have `None`
     join_handle: Option<JoinHandle<()>>,
@@ -60,12 +70,15 @@ pub struct SectionRunner {
 impl SectionRunner {
     /// Starts a new `SectionRunner` thread and returns a `SectionRunner` struct for managing it
     pub fn start_new() -> SectionRunner {
-        let (tx, rx) = channel::<Op>();
-        let join_handle = thread::spawn(move || Self::run(rx));
-        SectionRunner {
-            tx: tx,
-            join_handle: Some(join_handle),
-        }
+        let mut runner = SectionRunner {
+            state: RunnerState::new_arc(RunnerData::new()),
+            join_handle: None,
+        };
+        runner.join_handle = unsafe {
+            let state: &'static RunnerState = ::std::mem::transmute(&*runner.state as &_);
+            Some(thread::spawn(move || Self::run(state)))
+        };
+        runner
     }
 
     /// Queues a run for section `section` for a period of time specified by `dur`.
@@ -83,7 +96,10 @@ impl SectionRunner {
             dur: dur,
             notification_sender: send,
         };
-        self.tx.send(Op::QueueRun(run)).unwrap();
+        {
+            let mut data = self.state.update();
+            data.queue.push_back(run);
+        }
         recv
     }
 
@@ -91,21 +107,13 @@ impl SectionRunner {
     ///
     /// Any section runs that are queued are discarded, and if a section is currently running it
     /// will be interrupted.
-    ///
-    /// # Panics
-    /// This method will panic if `self` is a cloned copy of the original `SectionRunner`. Only the
-    /// `SectionRunner` returned from `start_new` can be used to stop the thread.
     pub fn stop(self) {
-        let join_handle = self.join_handle
-            .expect("SectionRunner was attempted to be stopped from a cloned copy");
-        self.tx.send(Op::Quit).unwrap();
-        join_handle.join().unwrap();
+        // drops self which will stop the thread
     }
 
     /// Runs the thread which does all of the magic
-    fn run(rx: Receiver<Op>) {
-        use self::Op::*;
-        use util::{WaitPeriod, wait_receiver};
+    fn run(state: &RunnerState) {
+        use util::WaitPeriod;
         struct Run {
             sec: SectionRef,
             dur: Duration,
@@ -114,28 +122,22 @@ impl SectionRunner {
         }
         let mut current_run: Option<Run> = None;
         let mut wait_period: WaitPeriod = WaitPeriod::Wait;
-        let mut queue: VecDeque<SecRun> = VecDeque::new();
         loop {
-            let op = wait_receiver(&rx, &wait_period);
-            trace!("SectionRunner op {:?}", op);
-            if let Some(op) = op {
-                match op {
-                    Quit => {
-                        if let Some(run) = current_run {
-                            debug!("interrupting section {:?}, ran for {}",
-                                   run.sec,
-                                   duration_string(&run.start_time.elapsed()));
-                            run.sec.set_state(false);
-                            // if the receiver is closed, it's ok
-                            let _ = run.notify.send(RunNotification::Interrupted);
-                            for run in queue {
-                                let _ = run.notification_sender.send(RunNotification::Interrupted);
-                            }
-                        }
-                        return;
+            let mut data = state.wait_update_for_period(&wait_period).unwrap();
+            trace!("SectionRunner data {:?}", *data);
+            if data.quit {
+                if let Some(run) = current_run {
+                    debug!("interrupting section {:?}, ran for {}",
+                           run.sec,
+                           duration_string(&run.start_time.elapsed()));
+                    run.sec.set_state(false);
+                    // if the receiver is closed, it's ok
+                    let _ = run.notify.send(RunNotification::Interrupted);
+                    for run in data.queue.drain(..) {
+                        let _ = run.notification_sender.send(RunNotification::Interrupted);
                     }
-                    QueueRun(run) => queue.push_back(run),
                 }
+                return;
             }
             current_run = {
                 if let Some(run) = current_run {
@@ -154,7 +156,7 @@ impl SectionRunner {
                         wait_period = WaitPeriod::AtMost(sleep_dur);
                         Some(run)
                     }
-                } else if let Some(run) = queue.pop_front() {
+                } else if let Some(run) = data.queue.pop_front() {
                     debug!("running section {:?} for {}",
                            run.sec,
                            duration_string(&run.dur));
@@ -178,13 +180,27 @@ impl SectionRunner {
 }
 
 impl Clone for SectionRunner {
-    /// Clones the `SectionRunner`. The cloned `SectionRunner` can be used to send messages to the
-    /// runner thread, but it can not be used to stop the thread. If the first `SectionRunner`
-    /// calls `stop`, any operations attempted from other `SectionRunner`s will panic.
     fn clone(&self) -> Self {
+        // only the original `SectionRunner` can join the thread
         SectionRunner {
-            tx: self.tx.clone(),
+            state: self.state.clone(),
             join_handle: None,
+        }
+    }
+}
+
+impl Drop for SectionRunner {
+    fn drop(&mut self) {
+        // stops the thread and waits for it to finish, because it references data stored in self,
+        // so it cannot outlive self
+        // if join_handle is None, either this isn't the original `SectionRunner` so it should not
+        // join the thread, or the join_handle has already been `take`n and joined on.
+        if let Some(join_handle) = self.join_handle.take() {
+            {
+                let mut data = self.state.update();
+                data.quit = true;
+            }
+            join_handle.join().unwrap();
         }
     }
 }

@@ -2,10 +2,8 @@
 
 use super::*;
 use std::thread::{self, JoinHandle};
-use std::sync::{Mutex, Condvar};
 use std::{cmp, fmt, mem};
 use chrono::{DateTime, Local, Duration as CDuration};
-use util::{LockCondvarGuard, CondvarGuard, chrono_duration_string};
 
 /// Executes events triggered by a [`ScheduleRunner`](struct.ScheduleRunner.html)
 pub trait Executor: Send {
@@ -73,7 +71,7 @@ impl<E: Executor> SchedRun<E> {
     fn update_next_run(&mut self) -> Option<DateTime<Local>> {
         self.next_run = self.sched.next_run();
         let duration_str = if let Some(till_run) = self.till_run() {
-            format!("in {}", chrono_duration_string(&till_run))
+            format!("in {}", util::chrono_duration_string(&till_run))
         } else {
             "never".into()
         };
@@ -494,33 +492,7 @@ impl<E: Executor> fmt::Debug for RunnerData<E> {
     }
 }
 
-struct RunnerState<E>
-    where E: Executor
-{
-    data: Mutex<RunnerData<E>>,
-    condvar: Condvar,
-}
-
-impl<E: Executor> RunnerState<E> {
-    fn new() -> Self {
-        RunnerState {
-            data: Mutex::new(RunnerData::new()),
-            condvar: Condvar::new(),
-        }
-    }
-
-    /// Begins an update to the `RunnerState`. When the `CondvarGuard` is dropped, it will notify
-    /// the runner thread of the update.
-    fn update(&self) -> CondvarGuard<RunnerData<E>> {
-        self.data.lock_condvar(&self.condvar).unwrap()
-    }
-
-    /// Notifies the runner thread of an update
-    #[allow(dead_code)]
-    fn notify_update(&self) {
-        self.condvar.notify_one();
-    }
-}
+type RunnerState<E> = util::RunnerState<RunnerData<E>>;
 
 /// A guard returned by [`ScheduleRunner.schedule`](struct.ScheduleRunner.html#fn.schedule) which
 /// allows for modifying a scheduled run or removing it
@@ -568,15 +540,14 @@ impl<E> ScheduleRunner<E>
     /// associated with it will be detached rather than stopped.
     pub fn start_new(executor: E) -> ScheduleRunner<E> {
         let mut runner = ScheduleRunner {
-            state: Box::new(RunnerState::new()),
+            state: RunnerState::new_box(RunnerData::new()),
             join_handle: None,
         };
         runner.join_handle = unsafe {
             // this should be ok, because all of the referenced data is stored in the same object
             // as the JoinHandle for the thread, and if it gets dropped the Drop impl should join
             // the thread.
-            let state: &'static RunnerState<E> =
-                ::std::mem::transmute(&*runner.state as &RunnerState<E>);
+            let state: &'static RunnerState<E> = ::std::mem::transmute(&*runner.state as &_);
             Some(thread::spawn(move || Self::run(state, executor)))
         };
         runner
@@ -613,13 +584,11 @@ impl<E> ScheduleRunner<E>
     }
 
     fn run(state: &RunnerState<E>, executor: E) {
-        let data = &state.data;
-        let condvar = &state.condvar;
-        use util::{WaitPeriod, wait_condvar};
+        use util::WaitPeriod;
         let mut wait_period = WaitPeriod::Wait;
         loop {
             trace!("sleeping for {:?}", wait_period);
-            let mut data_lock = wait_condvar(condvar, data, &wait_period).unwrap();
+            let mut data_lock = state.wait_update_for_period(&wait_period).unwrap();
 
             trace!("ScheduleRunner woke up. state: {:?}", *data_lock);
             if data_lock.quit {

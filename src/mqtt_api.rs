@@ -285,7 +285,7 @@ fn process_msg(prefix_path: &TopicPath,
                 }
                 "run_for" => {
                     let duration: Duration = unwrap_payload!(Duration : "run_for");
-                    state.section_runner.lock().unwrap().run_section(section.clone(), duration);
+                    state.section_runner.run_section(section.clone(), duration);
                     Ok(ApiResponse::new(format!("running section \"{}\" for {}",
                         section.name(), duration_string(&duration)),
                                         JsonValue::Null))
