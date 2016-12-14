@@ -74,8 +74,8 @@ impl SectionRunner {
             state: RunnerState::new_arc(RunnerData::new()),
             join_handle: None,
         };
-        runner.join_handle = unsafe {
-            let state: &'static RunnerState = ::std::mem::transmute(&*runner.state as &_);
+        runner.join_handle = {
+            let state = runner.state.clone();
             Some(thread::spawn(move || Self::run(state)))
         };
         runner
@@ -107,12 +107,21 @@ impl SectionRunner {
     ///
     /// Any section runs that are queued are discarded, and if a section is currently running it
     /// will be interrupted.
+    ///
+    /// # Panics
+    /// Will panic if called on a `clone`d instance of `SectionRunner`
     pub fn stop(self) {
-        // drops self which will stop the thread
+        let join_handle = self.join_handle
+            .expect("SectionRunner.stop() called on cloned instance");
+        {
+            let mut data = self.state.update();
+            data.quit = true;
+        }
+        join_handle.join().unwrap();
     }
 
     /// Runs the thread which does all of the magic
-    fn run(state: &RunnerState) {
+    fn run(state: Arc<RunnerState>) {
         use util::WaitPeriod;
         struct Run {
             sec: SectionRef,
@@ -185,22 +194,6 @@ impl Clone for SectionRunner {
         SectionRunner {
             state: self.state.clone(),
             join_handle: None,
-        }
-    }
-}
-
-impl Drop for SectionRunner {
-    fn drop(&mut self) {
-        // stops the thread and waits for it to finish, because it references data stored in self,
-        // so it cannot outlive self
-        // if join_handle is None, either this isn't the original `SectionRunner` so it should not
-        // join the thread, or the join_handle has already been `take`n and joined on.
-        if let Some(join_handle) = self.join_handle.take() {
-            {
-                let mut data = self.state.update();
-                data.quit = true;
-            }
-            join_handle.join().unwrap();
         }
     }
 }
