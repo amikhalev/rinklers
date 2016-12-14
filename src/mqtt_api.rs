@@ -160,13 +160,13 @@ fn run_on_client(client: &mut mqttc::Client,
                  running: &Arc<AtomicBool>) {
     let prefix_path = TopicPath::from_str(&prefix).unwrap();
 
-    initial_pubs(client, &prefix, &state);
-
-    client.subscribe(SubscribeTopic {
-            topic_path: format!("{}sections/+/+", prefix),
-            qos: QoS::ExactlyOnce,
-        })
-        .unwrap();
+    match initial_pubs(client, &prefix, &state).and_then(|_| initial_subs(client, &prefix)) {
+        Ok(()) => {}
+        Err(err) => {
+            error!("error performing mqtt initialization: {}", err);
+            return;
+        }
+    };
 
     let response_topic = format!("{}responses", prefix);
     while running.load(Ordering::SeqCst) {
@@ -185,11 +185,11 @@ fn run_on_client(client: &mut mqttc::Client,
             let result = process_msg(&prefix_path, &state, msg);
             let response_data: ApiResponseData = match result {
                 Ok(response) => {
-                    trace!("successfully completed request. response: {:?}", response);
+                    debug!("successfully completed request. response: {:?}", response);
                     response.into()
                 }
                 Err(error) => {
-                    trace!("error completing request: {:?}", error);
+                    debug!("error completing request: {}", error);
                     error.into()
                 }
             };
@@ -203,26 +203,42 @@ fn run_on_client(client: &mut mqttc::Client,
     debug!("disconnected from mqtt broker");
 }
 
-fn initial_pubs(client: &mut mqttc::Client, prefix: &str, state: &Arc<State>) {
+fn initial_pubs(client: &mut mqttc::Client, prefix: &str, state: &Arc<State>) -> mqttc::Result<()> {
     let pubopt = PubOpt::at_least_once() | PubOpt::retain();
-    client.publish(format!("{}connected", prefix), "true", pubopt)
-        .unwrap();
+    try!(client.publish(format!("{}connected", prefix), "true", pubopt));
 
     let sections: Vec<usize> = (0..state.sections.len()).collect();
     let sections = serde_json::to_string(&sections).unwrap();
-    client.publish(format!("{}sections", prefix), sections, pubopt).unwrap();
+    try!(client.publish(format!("{}sections", prefix), sections, pubopt));
 
     for (i, section) in state.sections.iter().enumerate() {
         let topic = format!("{}sections/{}", prefix, i);
         let section_config = SectionConfig::from_section(&section);
         let data = serde_json::to_string(&section_config).unwrap();
-        client.publish(topic, data, pubopt).unwrap();
+        try!(client.publish(topic, data, pubopt));
 
         let topic = format!("{}sections/{}/state", prefix, i);
         let state = section.state();
         let data = serde_json::to_string(&state).unwrap();
-        client.publish(topic, data, pubopt).unwrap();
+        try!(client.publish(topic, data, pubopt));
     }
+
+    Ok(())
+}
+
+fn initial_subs(client: &mut mqttc::Client, prefix: &str) -> mqttc::Result<()> {
+    let subs = ["sections/+/set_state", "sections/+/run_for"];
+
+    for topic in subs.iter() {
+        let topic_path = format!("{}{}", prefix, topic);
+        trace!("subscribing to {}", topic_path);
+        try!(client.subscribe(SubscribeTopic {
+            topic_path: topic_path,
+            qos: QoS::ExactlyOnce,
+        }));
+    }
+
+    Ok(())
 }
 
 fn process_msg(prefix_path: &TopicPath,
@@ -382,7 +398,7 @@ impl MqttApi {
         while running.load(Ordering::SeqCst) {
             debug!("reconnecting to mqtt broker");
             match client.reconnect() {
-                Ok(()) => {},
+                Ok(()) => {}
                 Err(err) => {
                     let retry_duration = Duration::new(1, 0);
                     warn!("error reconnecting to mqtt broker: {}. retrying after {}",
