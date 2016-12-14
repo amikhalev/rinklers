@@ -129,7 +129,7 @@ fn main() {
         .unwrap_or_else(|err| panic!("error opening config file: {}", err));
     let config: Config = serde_json::from_reader(file)
         .unwrap_or_else(|err| panic!("error parsing config file: {}", err));
-    debug!("config: {:?}", config);
+    trace!("config: {:?}", config);
 
     let state = State::from_config(config)
         .unwrap_or_else(|err| panic!("error creating state: {}", err));

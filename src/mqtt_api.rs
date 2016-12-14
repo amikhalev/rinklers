@@ -125,9 +125,11 @@ impl ApiResponseData {
 
 impl From<ApiError> for ApiResponseData {
     fn from(error: ApiError) -> Self {
-        Self::new(format!("{}", error),
-                  error.as_code() as usize,
-                  JsonValue::Null)
+        let data = match error.cause() {
+            Some(cause) => JsonValue::String(format!("{}", cause)),
+            None => JsonValue::Null,
+        };
+        Self::new(format!("{}", error), error.as_code() as usize, data)
     }
 }
 
@@ -152,16 +154,16 @@ fn init_client<A: ToSocketAddrs>(prefix: &str, address: A) -> mqttc::Result<mqtt
     opts.connect(address, net_opts)
 }
 
-fn run_on_client(mut client: mqttc::Client,
+fn run_on_client(client: &mut mqttc::Client,
                  prefix: &str,
                  state: &Arc<State>,
                  running: &Arc<AtomicBool>) {
     let prefix_path = TopicPath::from_str(&prefix).unwrap();
 
-    initial_pubs(&mut client, &prefix, &state);
+    initial_pubs(client, &prefix, &state);
 
     client.subscribe(SubscribeTopic {
-            topic_path: format!("{}sections/+/set_state", prefix),
+            topic_path: format!("{}sections/+/+", prefix),
             qos: QoS::ExactlyOnce,
         })
         .unwrap();
@@ -197,10 +199,8 @@ fn run_on_client(mut client: mqttc::Client,
         }
     }
 
-    match client.disconnect() {
-        Ok(()) => debug!("disconnected from mqtt broker"),
-        Err(err) => error!("error disconnecting from mqtt broker: {}", err),
-    }
+    client.terminate();
+    debug!("disconnected from mqtt broker");
 }
 
 fn initial_pubs(client: &mut mqttc::Client, prefix: &str, state: &Arc<State>) {
@@ -268,17 +268,30 @@ fn process_msg(prefix_path: &TopicPath,
        }
 
     match (collection_name, index, request_type) {
-        (Some("sections"), Some(idx), Some("set_state")) => {
+        (Some("sections"), Some(idx), Some(request_type)) => {
             let section = match state.sections.get(idx) {
                 Some(section) => section,
                 None => {
                     return Err(ApiError::SectionNotFound(idx));
                 }
             };
-            let sec_state: bool = unwrap_payload!(bool : "set_state");
-            section.set_state(sec_state);
-            Ok(ApiResponse::new(format!("setting section {} state to {}", idx, sec_state),
-                                JsonValue::Null))
+            match request_type {
+                "set_state" => {
+                    let sec_state: bool = unwrap_payload!(bool : "set_state");
+                    section.set_state(sec_state);
+                    Ok(ApiResponse::new(format!("setting section \"{}\" state to {}",
+                        section.name(), sec_state),
+                                        JsonValue::Null))
+                }
+                "run_for" => {
+                    let duration: Duration = unwrap_payload!(Duration : "run_for");
+                    state.section_runner.lock().unwrap().run_section(section.clone(), duration);
+                    Ok(ApiResponse::new(format!("running section \"{}\" for {}",
+                        section.name(), duration_string(&duration)),
+                                        JsonValue::Null))
+                }
+                _ => Err(ApiError::InvalidPath(msg.topic.path())),
+            }
         }
         _ => Err(ApiError::InvalidPath(msg.topic.path())),
     }
@@ -356,30 +369,31 @@ impl MqttApi {
     }
 
     fn run<A>(prefix: String, address: A, state: Arc<State>, running: Arc<AtomicBool>)
-        where A: ToSocketAddrs
+        where A: ToSocketAddrs + fmt::Debug
     {
-        let socket_addrs: Vec<_> = match address.to_socket_addrs() {
-            Ok(socket_addrs) => socket_addrs.collect(),
+        debug!("connecting to mqtt broker at {:?}", &address);
+        let mut client = match init_client(prefix.as_ref(), address) {
+            Ok(client) => client,
             Err(err) => {
-                error!("invalid broker address specified: {}", err);
+                error!("error connecting to mqtt broker: {}", err);
                 return;
             }
         };
         while running.load(Ordering::SeqCst) {
-            debug!("connecting to mqtt broker at {:?}", &socket_addrs);
-            let client = match init_client(prefix.as_ref(), socket_addrs.as_slice()) {
-                Ok(client) => client,
+            debug!("reconnecting to mqtt broker");
+            match client.reconnect() {
+                Ok(()) => {},
                 Err(err) => {
                     let retry_duration = Duration::new(1, 0);
-                    warn!("error connecting to mqtt broker: {}. retrying after {}",
-                          err, duration_string(&retry_duration));
+                    warn!("error reconnecting to mqtt broker: {}. retrying after {}",
+                        err, duration_string(&retry_duration));
                     thread::sleep(retry_duration);
                     continue;
                 }
-            };
-            info!("connected to mqtt broker");
+            }
 
-            run_on_client(client, &prefix, &state, &running);
+            info!("connected to mqtt broker");
+            run_on_client(&mut client, &prefix, &state, &running);
         }
     }
 }
