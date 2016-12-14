@@ -160,7 +160,7 @@ fn run_on_client(client: &mut mqttc::Client,
                  running: &Arc<AtomicBool>) {
     let prefix_path = TopicPath::from_str(&prefix).unwrap();
 
-    match initial_pubs(client, &prefix, &state).and_then(|_| initial_subs(client, &prefix)) {
+    match initial_pubs(client, prefix, state).and_then(|_| initial_subs(client, prefix)) {
         Ok(()) => {}
         Err(err) => {
             error!("error performing mqtt initialization: {}", err);
@@ -182,7 +182,7 @@ fn run_on_client(client: &mut mqttc::Client,
             }
         };
         if let Some(msg) = message {
-            let result = process_msg(&prefix_path, &state, msg);
+            let result = process_msg(&prefix_path, state, *msg);
             let response_data: ApiResponseData = match result {
                 Ok(response) => {
                     debug!("successfully completed request. response: {:?}", response);
@@ -213,7 +213,7 @@ fn initial_pubs(client: &mut mqttc::Client, prefix: &str, state: &Arc<State>) ->
 
     for (i, section) in state.sections.iter().enumerate() {
         let topic = format!("{}sections/{}", prefix, i);
-        let section_config = SectionConfig::from_section(&section);
+        let section_config = SectionConfig::from_section(section);
         let data = serde_json::to_string(&section_config).unwrap();
         try!(client.publish(topic, data, pubopt));
 
@@ -229,7 +229,7 @@ fn initial_pubs(client: &mut mqttc::Client, prefix: &str, state: &Arc<State>) ->
 fn initial_subs(client: &mut mqttc::Client, prefix: &str) -> mqttc::Result<()> {
     let subs = ["sections/+/set_state", "sections/+/run_for"];
 
-    for topic in subs.iter() {
+    for topic in &subs {
         let topic_path = format!("{}{}", prefix, topic);
         trace!("subscribing to {}", topic_path);
         try!(client.subscribe(SubscribeTopic {
@@ -243,7 +243,7 @@ fn initial_subs(client: &mut mqttc::Client, prefix: &str) -> mqttc::Result<()> {
 
 fn process_msg(prefix_path: &TopicPath,
                state: &Arc<State>,
-               msg: Box<mqttc::Message>)
+               msg: mqttc::Message)
                -> Result<ApiResponse, ApiError> {
     let topics: Option<Vec<&str>> = msg.topic
         .topics()
