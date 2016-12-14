@@ -147,10 +147,7 @@ fn main() {
 
     let prefix = "rinklers/";
     let addr = ("localhost", 1883);
-    debug!("connecting to mqtt broker at {:?}", addr);
-    let mqtt_api = MqttApi::new_connect(prefix, addr, state.clone())
-        .unwrap_or_else(|err| panic!("error connecting to mqtt broker: {}", err));
-    info!("connected to mqtt broker");
+    let mqtt_api = MqttApi::start_new(prefix, addr, state.clone());
 
     Trap::trap(&[2, 15]).next(); // SIGINT, SIGKILL
 

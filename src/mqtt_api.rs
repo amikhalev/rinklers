@@ -2,29 +2,292 @@
 
 use super::*;
 use mqttc::{PubSub, QoS, PubOpt, SubscribeTopic, TopicPath, Topic};
-use std::{thread, result, io};
+use std::{thread, result, io, fmt};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Weak;
 use std::os::unix::thread::JoinHandleExt;
 use std::net::ToSocketAddrs;
 use std::any::Any;
+use std::error::Error;
+use std::collections::BTreeMap;
+use serde_json::Value as JsonValue;
+use util::duration_string;
+
+struct LocalStorage(BTreeMap<mqttc::PacketIdentifier, Box<mqttc::Message>>);
+
+impl LocalStorage {
+    pub fn new() -> Box<LocalStorage> {
+        Box::new(LocalStorage(BTreeMap::new() as BTreeMap<mqttc::PacketIdentifier,
+                                                          Box<mqttc::Message>>))
+    }
+}
+
+impl mqttc::store::Store for LocalStorage {
+    fn put(&mut self, message: Box<mqttc::Message>) -> mqttc::store::Result<()> {
+        self.0.insert(message.pid.unwrap(), message);
+        Ok(())
+    }
+
+    fn get(&mut self, pid: mqttc::PacketIdentifier) -> mqttc::store::Result<Box<mqttc::Message>> {
+        match self.0.get(&pid) {
+            Some(m) => Ok(m.clone()),
+            None => Err(mqttc::store::Error::NotFound(pid)),
+        }
+    }
+
+    fn delete(&mut self, pid: mqttc::PacketIdentifier) -> mqttc::store::Result<()> {
+        self.0.remove(&pid);
+        Ok(())
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+struct ApiResponse {
+    message: String,
+    data: JsonValue,
+}
+
+impl ApiResponse {
+    fn new<S: Into<String>>(message: S, data: JsonValue) -> Self {
+        ApiResponse {
+            message: message.into(),
+            data: data,
+        }
+    }
+}
+
+quick_error! {
+    #[derive(Debug)]
+    enum ApiError {
+        InvalidPath(path: String) {
+            description("message received on invalid path")
+            display("message received on invalid path: {}", path)
+        }
+        InvalidPayloadUtf8(err: std::str::Utf8Error) {
+            from()
+            description("invalid utf8 bytes in payload")
+            cause(err)
+        }
+        InvalidPayloadJson(err: serde_json::Error, method: &'static str) {
+            description("invalid json in payload")
+            display("invalid json in payload for request type {}", method)
+            cause(err)
+        }
+        SectionNotFound(section_idx: usize) {
+            description("section not found")
+            display(self_) -> ("{}: {}", self_.description(), section_idx)
+        }
+    }
+}
+
+impl ApiError {
+    fn as_code(&self) -> ResponseCode {
+        use self::ApiError::*;
+        match *self {
+            InvalidPath(_) => ResponseCode::InvalidPath,
+            InvalidPayloadUtf8(_) => ResponseCode::InvalidPayloadUtf8,
+            InvalidPayloadJson(_, _) => ResponseCode::InvalidPayloadJson,
+            SectionNotFound(_) => ResponseCode::SectionNotFound,
+        }
+    }
+}
+
+/// A code that can be returned from an rinklers API request
+pub enum ResponseCode {
+    /// The request completed sucessfully
+    Success = 1000,
+    /// The request was made with on an invalid topic path
+    InvalidPath = 2000,
+    /// The request was made with an invalid utf8 string in the payload
+    InvalidPayloadUtf8 = 2001,
+    /// The request was made with invalid json data for the specified request in the payload
+    InvalidPayloadJson = 2002,
+    /// The request was made on a section that was not found
+    SectionNotFound = 2003,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+struct ApiResponseData {
+    message: String,
+    code: usize,
+    data: JsonValue,
+}
+
+impl ApiResponseData {
+    fn new<S: Into<String>>(message: S, code: usize, data: JsonValue) -> Self {
+        ApiResponseData {
+            message: message.into(),
+            code: code,
+            data: data,
+        }
+    }
+}
+
+impl From<ApiError> for ApiResponseData {
+    fn from(error: ApiError) -> Self {
+        Self::new(format!("{}", error),
+                  error.as_code() as usize,
+                  JsonValue::Null)
+    }
+}
+
+impl From<ApiResponse> for ApiResponseData {
+    fn from(response: ApiResponse) -> Self {
+        Self::new(response.message, 1000, response.data)
+    }
+}
 
 /// Initializes a new `mqttc::Client` on the specified prefix
-pub fn init_client<A: ToSocketAddrs>(prefix: &str, address: A) -> mqttc::Result<mqttc::Client> {
+fn init_client<A: ToSocketAddrs>(prefix: &str, address: A) -> mqttc::Result<mqttc::Client> {
     let mut opts = mqttc::ClientOptions::new();
     let connected_path = format!("{}connected", prefix);
     try!(opts.set_last_will(connected_path,
                             "false".to_string(),
                             PubOpt::at_least_once() | PubOpt::retain()));
+    opts.set_clean_session(true);
+    opts.set_outgoing_store(LocalStorage::new());
 
     let net_opts = mqttc::NetworkOptions::new();
 
     opts.connect(address, net_opts)
 }
 
+fn run_on_client(mut client: mqttc::Client,
+                 prefix: &str,
+                 state: &Arc<State>,
+                 running: &Arc<AtomicBool>) {
+    let prefix_path = TopicPath::from_str(&prefix).unwrap();
+
+    initial_pubs(&mut client, &prefix, &state);
+
+    client.subscribe(SubscribeTopic {
+            topic_path: format!("{}sections/+/set_state", prefix),
+            qos: QoS::ExactlyOnce,
+        })
+        .unwrap();
+
+    let response_topic = format!("{}responses", prefix);
+    while running.load(Ordering::SeqCst) {
+        let message = match client.await() {
+            Ok(message) => message,
+            Err(mqttc::Error::Disconnected) => {
+                warn!("mqtt client disconnected");
+                break;
+            }
+            Err(err) => {
+                error!("mqtt client error: {}", err);
+                break;
+            }
+        };
+        if let Some(msg) = message {
+            let result = process_msg(&prefix_path, &state, msg);
+            let response_data: ApiResponseData = match result {
+                Ok(response) => {
+                    trace!("successfully completed request. response: {:?}", response);
+                    response.into()
+                }
+                Err(error) => {
+                    trace!("error completing request: {:?}", error);
+                    error.into()
+                }
+            };
+            let data = serde_json::to_string(&response_data).unwrap();
+            client.publish(response_topic.clone(), data, PubOpt::exactly_once())
+                .unwrap()
+        }
+    }
+
+    match client.disconnect() {
+        Ok(()) => debug!("disconnected from mqtt broker"),
+        Err(err) => error!("error disconnecting from mqtt broker: {}", err),
+    }
+}
+
+fn initial_pubs(client: &mut mqttc::Client, prefix: &str, state: &Arc<State>) {
+    let pubopt = PubOpt::at_least_once() | PubOpt::retain();
+    client.publish(format!("{}connected", prefix), "true", pubopt)
+        .unwrap();
+
+    let sections: Vec<usize> = (0..state.sections.len()).collect();
+    let sections = serde_json::to_string(&sections).unwrap();
+    client.publish(format!("{}sections", prefix), sections, pubopt).unwrap();
+
+    for (i, section) in state.sections.iter().enumerate() {
+        let topic = format!("{}sections/{}", prefix, i);
+        let section_config = SectionConfig::from_section(&section);
+        let data = serde_json::to_string(&section_config).unwrap();
+        client.publish(topic, data, pubopt).unwrap();
+
+        let topic = format!("{}sections/{}/state", prefix, i);
+        let state = section.state();
+        let data = serde_json::to_string(&state).unwrap();
+        client.publish(topic, data, pubopt).unwrap();
+    }
+}
+
+fn process_msg(prefix_path: &TopicPath,
+               state: &Arc<State>,
+               msg: Box<mqttc::Message>)
+               -> Result<ApiResponse, ApiError> {
+    let topics: Option<Vec<&str>> = msg.topic
+        .topics()
+        .iter()
+        .skip(prefix_path.len() - 1)
+        .map(|topic| match *topic {
+            Topic::Normal(ref topic) => Some(topic.as_str()),
+            _ => None,
+        })
+        .collect();
+    let topics = match topics {
+        Some(topics) => topics,
+        _ => {
+            return Err(ApiError::InvalidPath(msg.topic.path()));
+        }
+    };
+
+    let payload_str = try!(str::from_utf8(&*msg.payload));
+
+    trace!("received mqtt message: topic: {:?}, payload: {}",
+           topics,
+           payload_str);
+
+    let collection_name: Option<&str> = topics.get(0).cloned();
+    let index: Option<usize> = topics.get(1)
+        .and_then(|idx_str| usize::from_str_radix(idx_str, 10).ok());
+    let request_type = topics.get(2).cloned();
+
+    macro_rules! unwrap_payload {
+            ($payload_type:ty : $for_method:expr) => (
+                match serde_json::from_str::<$payload_type>(payload_str) {
+                    Ok(payload) => payload,
+                    Err(err) => {
+                        return Err(ApiError::InvalidPayloadJson(err, $for_method));
+                    }
+                }
+            )
+       }
+
+    match (collection_name, index, request_type) {
+        (Some("sections"), Some(idx), Some("set_state")) => {
+            let section = match state.sections.get(idx) {
+                Some(section) => section,
+                None => {
+                    return Err(ApiError::SectionNotFound(idx));
+                }
+            };
+            let sec_state: bool = unwrap_payload!(bool : "set_state");
+            section.set_state(sec_state);
+            Ok(ApiResponse::new(format!("setting section {} state to {}", idx, sec_state),
+                                JsonValue::Null))
+        }
+        _ => Err(ApiError::InvalidPath(msg.topic.path())),
+    }
+}
+
 /// A struct that exposes an API for manipulating this rinklers instance through an MQTT broker
 pub struct MqttApi {
     join_handle: thread::JoinHandle<()>, // state: Arc<State>,
-    running: Arc<AtomicBool>,
+    running: Weak<AtomicBool>,
 }
 
 quick_error! {
@@ -39,44 +302,42 @@ quick_error! {
 }
 
 /// A result that can be returned from `MqttApi` methods
-pub type Result<T> = result::Result<T, MqttApiError>;
+pub type MqttApiResult<T> = result::Result<T, MqttApiError>;
 
 impl MqttApi {
     /// Creates a new `MqttApi` instance.
     /// `prefix` is the string that is prefixed to all topics exposed on the broker
     /// `client` is the `mqttc::Client` to use to expose the topics
     /// `state` is an `Arc` to the application state that is used by the apis
-    pub fn new<S: AsRef<str>>(prefix: S, client: mqttc::Client, state: Arc<State>) -> Self {
+    pub fn start_new<S, A>(prefix: S, address: A, state: Arc<State>) -> Self
+        where S: Into<String>,
+              A: ToSocketAddrs + fmt::Debug + Send + 'static
+    {
         let running = Arc::new(AtomicBool::new(true));
+        let running_handle = Arc::downgrade(&running);
         let join_handle = {
-            let prefix = prefix.as_ref().to_string();
-            let state = state.clone();
-            let running = running.clone();
+            let prefix = prefix.into();
             thread::spawn(move || {
-                Self::run(prefix, client, state, running);
+                Self::run(prefix, address, state, running);
             })
         };
         MqttApi {
             join_handle: join_handle,
-            running: running,
+            running: running_handle,
         }
-    }
-
-    /// Connects to the mqtt broker at `address` and creates a new `MqttApi` instance based on
-    /// the connected client.
-    /// # See [new](#fn.new)
-    pub fn new_connect<S: AsRef<str>, A: ToSocketAddrs>(prefix: S,
-                                                        address: A,
-                                                        state: Arc<State>)
-                                                        -> mqttc::Result<Self> {
-        let client = try!(init_client(prefix.as_ref(), address));
-        Ok(Self::new(prefix, client, state))
     }
 
     /// Stops the `MqttApi`, disconnecting the client and waiting for the processing thread to
     /// quit.
-    pub fn stop(self) -> Result<()> {
-        self.running.store(false, Ordering::SeqCst);
+    pub fn stop(self) -> MqttApiResult<()> {
+        let running = match self.running.upgrade() {
+            Some(running) => running,
+            None => {
+                // thread has already exited and dropped the `Arc`
+                return Ok(());
+            }
+        };
+        running.store(false, Ordering::SeqCst);
         {
             let pthread = self.join_handle.as_pthread_t();
             unsafe {
@@ -94,107 +355,31 @@ impl MqttApi {
             .map_err(|err| MqttApiError::ThreadJoinError(err))
     }
 
-    fn run(prefix: String,
-           mut client: mqttc::Client,
-           state: Arc<State>,
-           running: Arc<AtomicBool>) {
-        let prefix_path = TopicPath::from_str(&prefix).expect("invalid prefix path");
-
-        let pubopt = PubOpt::at_least_once() | PubOpt::retain();
-        client.publish(format!("{}connected", prefix), "true", pubopt)
-            .unwrap();
-
-        let sections: Vec<usize> = (0..state.sections.len()).collect();
-        let sections = serde_json::to_string(&sections).unwrap();
-        client.publish(format!("{}sections", prefix), sections, pubopt).unwrap();
-
-        for (i, section) in state.sections.iter().enumerate() {
-            let topic = format!("{}sections/{}", prefix, i);
-            let section_config = SectionConfig::from_section(&section);
-            let data = serde_json::to_string(&section_config).unwrap();
-            client.publish(topic, data, pubopt).unwrap();
-
-            let topic = format!("{}sections/{}/state", prefix, i);
-            let state = section.state();
-            let data = serde_json::to_string(&state).unwrap();
-            client.publish(topic, data, pubopt).unwrap();
-        }
-
-        client.subscribe(SubscribeTopic {
-                topic_path: format!("{}sections/+/set_state", prefix),
-                qos: QoS::ExactlyOnce,
-            })
-            .unwrap();
-
-        while running.load(Ordering::SeqCst) {
-            if let Some(msg) = client.await().unwrap() {
-                Self::process_msg(&prefix_path, &state, msg);
-            }
-        }
-
-        client.disconnect()
-            .unwrap_or_else(|err| panic!("error disconnecting from mqtt broker: {}", err));
-        debug!("disconnected from mqtt broker")
-    }
-
-    fn process_msg(prefix_path: &TopicPath, state: &Arc<State>, msg: Box<mqttc::Message>) {
-        let topics: Option<Vec<&str>> = msg.topic
-            .topics()
-            .iter()
-            .skip(prefix_path.len() - 1)
-            .map(|topic| match *topic {
-                Topic::Normal(ref topic) => Some(topic.as_str()),
-                _ => None,
-            })
-            .collect();
-        let topics = match topics {
-            Some(topics) => topics,
-            _ => {
-                warn!("strange path received with non-Topic::Normal components: {}",
-                      msg.topic.path());
-                return;
-            }
-        };
-
-        let payload_str = match str::from_utf8(&*msg.payload) {
-            Ok(str) => str,
+    fn run<A>(prefix: String, address: A, state: Arc<State>, running: Arc<AtomicBool>)
+        where A: ToSocketAddrs
+    {
+        let socket_addrs: Vec<_> = match address.to_socket_addrs() {
+            Ok(socket_addrs) => socket_addrs.collect(),
             Err(err) => {
-                warn!("received message with invalid utf8 payload: {:?}", err);
+                error!("invalid broker address specified: {}", err);
                 return;
             }
         };
+        while running.load(Ordering::SeqCst) {
+            debug!("connecting to mqtt broker at {:?}", &socket_addrs);
+            let client = match init_client(prefix.as_ref(), socket_addrs.as_slice()) {
+                Ok(client) => client,
+                Err(err) => {
+                    let retry_duration = Duration::new(1, 0);
+                    warn!("error connecting to mqtt broker: {}. retrying after {}",
+                          err, duration_string(&retry_duration));
+                    thread::sleep(retry_duration);
+                    continue;
+                }
+            };
+            info!("connected to mqtt broker");
 
-        trace!("received mqtt message: topic: {:?}, payload: {}",
-               topics,
-               payload_str);
-
-        let collection_name: Option<&str> = topics.get(0).cloned();
-        let index: Option<usize> = topics.get(1)
-            .and_then(|idx_str| usize::from_str_radix(idx_str, 10).ok());
-        let postfix = topics.get(2).cloned();
-
-        macro_rules! unwrap_payload {
-                ($payload_type:ty : $for_method:expr) => (
-                    match serde_json::from_str::<$payload_type>(payload_str) {
-                        Ok(payload) => payload,
-                        Err(_) => {
-                            warn!("invalid payload for {}: \"{}\"", $for_method, payload_str);
-                            return;
-                        }
-                    }
-                )
-           }
-
-        match (collection_name, index, postfix) {
-            (Some("sections"), Some(idx), Some("set_state")) => {
-                let sec_state: bool = unwrap_payload!(bool : "set_state");
-                debug!("setting section {} state to {}", idx, sec_state);
-                match state.sections.get(idx) {
-                    Some(ref section) => section.set_state(sec_state),
-                    None => warn!("section index out of range: {}", idx),
-                };
-            }
-            _ => debug!("received message on invalid topic {}", msg.topic.path()),
+            run_on_client(client, &prefix, &state, &running);
         }
     }
 }
