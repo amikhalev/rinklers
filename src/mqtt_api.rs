@@ -387,29 +387,40 @@ impl MqttApi {
     fn run<A>(prefix: String, address: A, state: Arc<State>, running: Arc<AtomicBool>)
         where A: ToSocketAddrs + fmt::Debug
     {
-        debug!("connecting to mqtt broker at {:?}", &address);
-        let mut client = match init_client(prefix.as_ref(), address) {
-            Ok(client) => client,
-            Err(err) => {
-                error!("error connecting to mqtt broker: {}", err);
-                return;
-            }
-        };
+        let mut client: Option<mqttc::Client> = None;
+        let retry_duration = Duration::new(10, 0);
         while running.load(Ordering::SeqCst) {
-            debug!("reconnecting to mqtt broker");
-            match client.reconnect() {
-                Ok(()) => {}
-                Err(err) => {
-                    let retry_duration = Duration::new(1, 0);
-                    warn!("error reconnecting to mqtt broker: {}. retrying after {}",
-                        err, duration_string(&retry_duration));
-                    thread::sleep(retry_duration);
-                    continue;
+            client = match client.take() {
+                None => {
+                    debug!("connecting to mqtt broker at {:?}", &address);
+                    match init_client(prefix.as_ref(), &address) {
+                        Ok(client) => Some(client),
+                        Err(err) => {
+                            warn!("error connecting to mqtt broker: {}. retrying after {}",
+                                  err, duration_string(&retry_duration));
+                            thread::sleep(retry_duration);
+                            None
+                        }
+                    }
                 }
-            }
+                Some(mut client) => {
+                    debug!("reconnecting to mqtt broker");
+                    match client.reconnect() {
+                        Err(err) => {
+                            warn!("error reconnecting to mqtt broker: {}. retrying after {}",
+                                  err, duration_string(&retry_duration));
+                            thread::sleep(retry_duration);
+                        }
+                        _ => {}
+                    }
+                    Some(client)
+                }
+            };
 
-            info!("connected to mqtt broker");
-            run_on_client(&mut client, &prefix, &state, &running);
+            if let Some(mut client) = client.as_mut() {
+                info!("connected to mqtt broker");
+                run_on_client(&mut client, &prefix, &state, &running);
+            }
         }
     }
 }
